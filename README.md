@@ -76,8 +76,8 @@ The system uses offline QR-based payment exchange, allowing users to send and re
 #### 3. Sync and Validation (Online)
 
 * App detects connectivity
-* Pending transactions sent to server
-* Server validates and updates balances
+* Pending transactions sent to backend
+* backend validates and updates balances
 
 Final Status:
 

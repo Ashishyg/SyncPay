@@ -29,10 +29,10 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
-
-# AI tools
+server/db/pocketpay.db
+backend/db/syncpay.db
 .agents
 .claude
 .gemini
 context.md
-graphify-out/
+graphify-out/

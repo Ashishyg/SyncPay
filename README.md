@@ -1,4 +1,4 @@
-# ScanPay — Offline Digital Payment System
+# SyncPay — Offline Digital Payment System
 
 ## Problem Statement
 
@@ -21,7 +21,7 @@ To make UPI-like payments accessible in low-connectivity environments and improv
 
 ## Solution Overview
 
-ScanPay is an offline-first digital payment system that enables seamless peer-to-peer transactions without requiring WiFi, mobile data, or hotspot connectivity.
+SyncPay is an offline-first digital payment system that enables seamless peer-to-peer transactions without requiring WiFi, mobile data, or hotspot connectivity.
 
 The system uses offline QR-based payment exchange, allowing users to send and receive money even in zero-network conditions.
 
@@ -31,28 +31,98 @@ The system uses offline QR-based payment exchange, allowing users to send and re
 
 ---
 
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React + Vite (PWA) |
+| Backend | Node.js + Express |
+| Database | SQLite (better-sqlite3) |
+| Local Storage | IndexedDB (idb) |
+| Cryptography | Web Crypto API (Ed25519 + AES-256-GCM) |
+| QR Code | qrcode.react + jsQR |
+| State Management | Zustand |
+| Styling | Tailwind CSS |
+
+---
+
+## Project Structure
+
+```
+SyncPay/
+├── backend/              # Express server
+│   ├── db/               # SQLite database & schema
+│   ├── middleware/        # JWT auth middleware
+│   ├── services/         # Transaction reconciler
+│   ├── index.js          # Main server entry point
+│   └── db.js             # Database initialization
+├── frontend/             # React + Vite client
+│   ├── src/
+│   │   ├── components/   # Sidebar, Keypad, Toast, etc.
+│   │   ├── screens/      # All app screens (Home, Send, Receive, etc.)
+│   │   ├── services/     # API, crypto, sync, storage, wallet services
+│   │   ├── store/        # Zustand wallet store
+│   │   ├── App.jsx       # Root component with routing
+│   │   └── index.css     # Design system tokens
+│   ├── vite.config.js    # Vite config with HTTPS & proxy
+│   └── index.html
+├── .gitignore
+└── README.md
+```
+
+---
+
+## Setup & Installation
+
+### Prerequisites
+
+* Node.js v18+
+* npm
+
+### Backend
+
+```bash
+cd backend
+npm install
+node index.js
+```
+
+Server starts on `http://localhost:3000`
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+App starts on `https://localhost:5173` (HTTPS for camera/crypto API access)
+
+### Mobile Testing
+
+Access the app from your phone on the same network:
+```
+https://<your-laptop-ip>:5173
+```
+
+---
+
 ## Key Features
 
-* Internet-Free Transactions
-  Perform payments without any network connection
+* **Internet-Free Transactions** — Perform payments without any network connection
 
-* Secure One-Time OTP Authentication
-  Ensures user identity during onboarding
+* **Secure One-Time OTP Authentication** — Ensures user identity during onboarding
 
-* Offline QR Code-Based Payments
-  Exchange payment data directly between devices
+* **Offline QR Code-Based Payments** — Exchange payment data directly between devices
 
-* Merchant-Specific Static QR Codes
-  Enables offline payments at shops and vendors
+* **Merchant-Specific Static QR Codes** — Enables offline payments at shops and vendors
 
-* Instant Payment Experience
-  Transactions appear instantly (pending confirmation)
+* **Instant Payment Experience** — Transactions appear instantly (pending confirmation)
 
-* Peer-to-Peer Transactions
-  Direct user-to-user payments
+* **Peer-to-Peer Transactions** — Direct user-to-user payments
 
-* USSD-Based Payment Simulation
-  Supports feature-phone-like interaction models
+* **Auto-Sync on Reconnection** — Automatically syncs pending transactions when internet is detected
 
 ---
 
@@ -63,46 +133,50 @@ The system uses offline QR-based payment exchange, allowing users to send and re
 #### 1. Onboarding (Online — One Time)
 
 * User registers using OTP
-* Wallet is initialized
+* Ed25519 keypair is generated and encrypted with user's PIN
+* Wallet is initialized on the server
 
 #### 2. Offline Payment
 
-* Sender enters amount
-* Generates QR code
-* Receiver scans QR
+* Sender enters amount → funds are locked locally
+* Cryptographically signed QR code is generated
+* Receiver scans QR → signature is verified locally
 * Transaction stored locally on both devices
-* Status: Pending (Unverified)
+* Sender: Locked funds | Receiver: Unconfirmed balance
 
 #### 3. Sync and Validation (Online)
 
 * App detects connectivity
 * Pending transactions sent to backend
-* backend validates and updates balances
+* Server verifies Ed25519 signatures and nonces
+* Balances are updated atomically
 
 Final Status:
 
-* Confirmed
-* Failed (if conflict occurs)
+* ✅ Confirmed — balance updated on both sides
+* ❌ Failed — funds unlocked back to sender
 
 ---
 
 ## Wallet Model
 
-ScanPay uses a prepaid wallet system:
+SyncPay uses a prepaid wallet system:
 
 * Users load money into wallet when online
 * Offline transactions use wallet balance
-* Final settlement happens after sync
+* Funds are **locked** (not deducted) during offline payment
+* Final settlement happens after sync with the server
 
 ---
 
 ## Security Approach
 
-* Digital transaction signing
-* Local balance locking (prevents overspending)
-* Transaction limits to reduce risk
-* Replay protection using unique transaction IDs
-* Secure local storage
+* **Ed25519 digital signatures** — every transaction is cryptographically signed
+* **AES-256-GCM encryption** — private keys encrypted with user's PIN
+* **Nonce-based replay protection** — prevents duplicate transaction processing
+* **Local balance locking** — prevents overspending offline
+* **Transaction limits** — ₹500/transaction, ₹2,000/day offline cap
+* **Secure local storage** — keys stored in IndexedDB, never transmitted
 
 ---
 
@@ -117,7 +191,7 @@ ScanPay uses a prepaid wallet system:
 
 ## Innovation and Impact
 
-ScanPay directly addresses the challenge of last-mile banking without internet by enabling:
+SyncPay directly addresses the challenge of last-mile banking without internet by enabling:
 
 * Financial access in rural and remote areas
 * Reliable transactions during network outages
@@ -141,27 +215,16 @@ Real-world deployment would require:
 
 ## Demo Scenario
 
-1. Two users onboard and load wallet
-2. Internet is turned off
-3. User A sends money via QR
-4. User B receives payment (pending)
-5. Internet is restored
-6. Transactions sync and are confirmed
+1. Two users onboard and load wallet (online)
+2. Internet is turned off on the sender
+3. Sender enters amount → QR code is generated
+4. Receiver scans QR → accepts payment (shows as Unconfirmed)
+5. Internet is restored on the sender
+6. Auto-sync runs → transactions are confirmed on both sides
+7. Balances update to reflect the confirmed transfer
 
 ---
 
 ## Conclusion
 
-ScanPay demonstrates that digital payments can function independently of internet connectivity, making financial services more inclusive, resilient, and accessible.
-
----
-
-## Tech Stack
-
-* Frontend: React + Vite (PWA)
-* Backend: Node.js + Express
-* Database: MongoDB
-* Storage: IndexedDB
-* Security: Web Crypto API
-* QR: qrcode, html5-qrcode
-
+SyncPay demonstrates that digital payments can function independently of internet connectivity, making financial services more inclusive, resilient, and accessible.

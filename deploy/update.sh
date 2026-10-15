@@ -10,4 +10,5 @@ cp "$APP/deploy/syncpay.service" /etc/systemd/system/syncpay.service
 systemctl daemon-reload
 systemctl restart syncpay
 sleep 3
-curl -fsS http://127.0.0.1:3000/api/health && echo "  updated and running"
+PORT="$(grep -E '^PORT=' "$APP/backend/.env" | cut -d= -f2)"
+curl -fsS "http://127.0.0.1:${PORT:-3100}/api/health" && echo "  updated and running"

@@ -9,7 +9,7 @@ Group=syncpay
 WorkingDirectory=/opt/syncpay/backend
 Environment=NODE_ENV=production
 EnvironmentFile=/opt/syncpay/backend/.env
-ExecStart=/usr/bin/node index.js
+ExecStart=/opt/syncpay-node/bin/node index.js
 Restart=always
 RestartSec=3
 

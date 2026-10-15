@@ -176,6 +176,10 @@ the server or the device's own records.
 Files are in `deploy/`: Caddy serves the app with automatic HTTPS (Let's Encrypt) and proxies
 `/api` to the backend, which runs as a systemd service.
 
+It shares a server safely with other apps: SyncPay gets its own private Node.js
+(`/opt/syncpay-node`), its own port (default **3100**, set `PORT=` to change), and an existing
+Caddy is extended with a backup of its config, never replaced.
+
 1. Point the domain's DNS **A record** at the server's IP and allow ports 80 and 443.
 2. On the server:
    ```bash
@@ -183,7 +187,7 @@ Files are in `deploy/`: Caddy serves the app with automatic HTTPS (Let's Encrypt
    sudo DOMAIN=syncpay.acrossthe.cloud bash setup.sh
    ```
 3. Link WhatsApp through an SSH tunnel (the page is never public):
-   `ssh -L 3000:127.0.0.1:3000 <user>@<server>` → open `http://localhost:3000/whatsapp`.
+   `ssh -L 3100:127.0.0.1:3100 <user>@<server>` → open `http://localhost:3100/whatsapp`.
 4. Later updates: `sudo bash /opt/syncpay/deploy/update.sh`.
 
 Back up `backend/keys/`, `backend/.env` and `backend/db/` on the server.

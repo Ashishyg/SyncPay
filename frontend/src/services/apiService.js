@@ -94,6 +94,25 @@ export function clearToken() {
 // ============================
 // MERCHANT
 // ============================
+// ============================
+// OFFLINE ALLOWANCE + ACCOUNT
+// ============================
+export async function requestAllowance() {
+  const { data } = await api.post('/api/allowance');
+  return data; // { voucher, wallet, serverPub }
+}
+
+export async function updateKeyBackup(backup) {
+  const { data } = await api.put('/api/auth/backup', { backup });
+  return data;
+}
+
+export async function logoutOtherDevices() {
+  const { data } = await api.post('/api/auth/logout-others');
+  if (data.token) localStorage.setItem('sp_token', data.token);
+  return data;
+}
+
 export async function getTransactions() {
   const { data } = await api.get('/api/transactions');
   return data.transactions; // settled txns in both directions, newest first

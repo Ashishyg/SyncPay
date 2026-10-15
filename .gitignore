@@ -38,3 +38,6 @@ context.md
 graphify-out/
 # WhatsApp (Baileys) session — contains the linked account's keys
 backend/wa_auth/
+
+# Server signing key for offline allowance vouchers — back it up, never commit
+backend/keys/

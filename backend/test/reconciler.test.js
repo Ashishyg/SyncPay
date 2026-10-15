@@ -6,8 +6,10 @@ import os from 'os';
 import path from 'path';
 
 process.env.DB_PATH = path.join(os.tmpdir(), `syncpay-test-${Date.now()}.db`);
+process.env.SERVER_KEY_PATH = path.join(os.tmpdir(), `syncpay-test-key-${Date.now()}.pem`);
 const { initDB } = await import('../db.js');
 const { reconcileTransactions } = await import('../services/reconciler.js');
+const { getOrIssueAllowance, voucherString, SERVER_PUB, ALLOWANCE_TTL, ALLOWANCE_GRACE } = await import('../services/allowance.js');
 const db = initDB();
 
 function makeUser(name, balance) {
@@ -77,4 +79,46 @@ test('limits and balance are enforced server-side', () => {
   sync(b, pay(a, 50000, 2), pay(a, 50000, 3), pay(a, 50000, 4), pay(a, 50000, 5));
   assert.equal(sync(b, pay(a, 100, 6))[0].fail_reason, 'DAILY_LIMIT_EXCEEDED');
   assert.equal(sync(b, pay(poor, 101, 1))[0].fail_reason, 'INSUFFICIENT_BALANCE');
+});
+
+// ── Offline allowance ──
+const wal = (u) => db.prepare('SELECT confirmed_bal AS free, locked_bal AS reserved FROM wallets WHERE user_id = ?').get(u.id);
+const userRow = (u) => ({ id: u.id, pub_key: u.pub });
+
+test('allowance: server-signed voucher, amount reserved from the free balance', () => {
+  const a = makeUser('A', 300000); // ₹3,000
+  const v = getOrIssueAllowance(db, userRow(a));
+  assert.equal(v.c, 200000);       // capped at ₹2,000
+  assert.deepEqual(wal(a), { free: 100000, reserved: 200000 });
+  const pubKey = crypto.createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(SERVER_PUB, 'base64')]), format: 'der', type: 'spki' });
+  assert.ok(crypto.verify(null, Buffer.from(voucherString({ pub: a.pub, ...v })), pubKey, Buffer.from(v.s, 'base64')));
+  assert.equal(getOrIssueAllowance(db, userRow(a)).a, v.a); // same voucher again, nothing re-reserved
+  assert.deepEqual(wal(a), { free: 100000, reserved: 200000 });
+});
+
+test('allowance: payment inside the voucher settles from the reserve even with no free balance', () => {
+  const a = makeUser('A', 50000), b = makeUser('B', 0);
+  const v = getOrIssueAllowance(db, userRow(a));            // reserves all ₹500
+  assert.equal(wal(a).free, 0);                              // can't be withdrawn or spent online now
+  assert.equal(sync(b, pay(a, 30000, v.a))[0].status, 'confirmed');
+  assert.deepEqual(wal(a), { free: 0, reserved: 20000 });
+  assert.equal(bal(b), 30000);
+});
+
+test('allowance: double-spending the same allowance — first claim wins, the rest fail', () => {
+  const a = makeUser('A', 50000), shop1 = makeUser('S1', 0), shop2 = makeUser('S2', 0);
+  const v = getOrIssueAllowance(db, userRow(a));            // ₹500 reserved
+  assert.equal(sync(shop1, pay(a, 40000, v.a))[0].status, 'confirmed');
+  assert.equal(sync(shop2, pay(a, 40000, v.a + 1))[0].fail_reason, 'INSUFFICIENT_BALANCE'); // reserve left ₹100, free ₹0
+  assert.equal(bal(shop1), 40000);
+});
+
+test('allowance: unspent reserve returns after expiry + grace', () => {
+  const a = makeUser('A', 100000);
+  const t0 = 2_000_000_000;
+  getOrIssueAllowance(db, userRow(a), t0);
+  assert.deepEqual(wal(a), { free: 0, reserved: 100000 });
+  getOrIssueAllowance(db, userRow(a), t0 + ALLOWANCE_TTL + ALLOWANCE_GRACE + 1); // releases, then re-issues
+  assert.deepEqual(wal(a), { free: 0, reserved: 100000 });
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM allowances WHERE user_id = ? AND released = 1').get(a.id).n, 1);
 });

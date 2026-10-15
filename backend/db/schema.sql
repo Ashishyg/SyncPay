@@ -74,3 +74,18 @@ CREATE TABLE IF NOT EXISTS notifications (
   is_read     INTEGER DEFAULT 0,
   created_at  INTEGER DEFAULT (unixepoch())
 );
+
+-- Offline spending allowances (server-signed vouchers; cap is reserved in wallets.locked_bal)
+CREATE TABLE IF NOT EXISTS allowances (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  cap         INTEGER NOT NULL,
+  spent       INTEGER NOT NULL DEFAULT 0,
+  nonce_lo    INTEGER NOT NULL,
+  nonce_hi    INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  sig         TEXT NOT NULL,
+  released    INTEGER NOT NULL DEFAULT 0,
+  issued_at   INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_allowances_user ON allowances(user_id, released);

@@ -23,16 +23,14 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       workbox: {
+        // App shell (JS/CSS/HTML/icons) is precached, so the app opens with no network.
+        // API calls are deliberately NOT cached: a stale balance is worse than "offline".
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^https?:\/\/(localhost|10\.\d+\.\d+\.\d+):3000\/api\//,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              networkTimeoutSeconds: 8,
-              expiration: { maxEntries: 50, maxAgeSeconds: 60 * 60 * 24 },
-            },
+            urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/,
+            handler: 'CacheFirst',
+            options: { cacheName: 'google-fonts', expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 }, cacheableResponse: { statuses: [0, 200] } },
           },
         ],
       },
@@ -40,14 +38,16 @@ export default defineConfig({
       manifest: {
         name: 'SyncPay',
         short_name: 'SyncPay',
-        description: 'Offline-first cryptographic wallet',
-        theme_color: '#6c5ce7',
-        background_color: '#13131b',
+        description: 'Offline-first payments: pay and receive by QR without internet',
+        theme_color: '#ffffff',
+        background_color: '#ffffff',
         display: 'standalone',
         start_url: '/',
+        scope: '/',
         icons: [
-          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
     }),

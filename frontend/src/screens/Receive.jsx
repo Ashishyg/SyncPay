@@ -2,11 +2,13 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { addUnconfirmedReceived } from '../services/walletService';
-import { verifySignature } from '../services/cryptoService';
-import { savePendingTxn, isNonceUsed, markNonceUsed } from '../services/storageService';
+import { verifySignature, verifyText, signText, unlockKey } from '../services/cryptoService';
+import { savePendingTxn, isNonceUsed, markNonceUsed, getAllTxns, getKeys } from '../services/storageService';
 import { notifyPaymentReceived } from '../services/notificationService';
-import jsQR from 'jsqr';
-import { ArrowLeft, CheckCircle2, XCircle, Loader2, CameraOff, ShieldCheck, Clock } from 'lucide-react';
+import { detectQR, CAMERA_CONSTRAINTS } from '@/lib/qrScan';
+import { ArrowLeft, CheckCircle2, XCircle, Loader2, CameraOff, ShieldCheck, Clock, ShieldAlert, ReceiptText } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import Keypad, { PinDots } from '@/components/Keypad';
 import Viewfinder from '@/components/Viewfinder';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -29,16 +31,19 @@ export default function Receive() {
   const [showModal, setShowModal] = useState(false);
   const [scannedTxn, setScannedTxn] = useState(null);
   const [verifying, setVerifying] = useState(false);
-  const [verifyResult, setVerifyResult] = useState(null); // { valid, reason }
+  const [verifyResult, setVerifyResult] = useState(null); // { valid, reason, backing }
+  const [accepted, setAccepted] = useState(false);
+  const [receiptStage, setReceiptStage] = useState(null);  // null | 'pin' | 'qr'
+  const [receiptPin, setReceiptPin] = useState('');
+  const [receiptErr, setReceiptErr] = useState('');
+  const [receiptQr, setReceiptQr] = useState('');
 
   // Start camera
   useEffect(() => {
     let mounted = true;
     const startCamera = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
+        const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
         if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
         if (videoRef.current) {
@@ -69,25 +74,36 @@ export default function Receive() {
   // Scan video frames for QR codes
   useEffect(() => {
     if (!scanning) return;
-    scanInterval.current = setInterval(() => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (!video || !canvas || video.readyState < 2) return;
-
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height);
-
-      if (code && code.data) {
-        handleQRDetected(code.data);
+    scanInterval.current = setInterval(async () => {
+      const data = await detectQR(videoRef.current, canvasRef.current);
+      if (data && scanInterval.current) { // ignore a late result after we already stopped
+        clearInterval(scanInterval.current);
+        scanInterval.current = null;
+        handleQRDetected(data);
       }
     }, 150); // scan ~7 times per second
 
     return () => { if (scanInterval.current) clearInterval(scanInterval.current); };
   }, [scanning]);
+
+  // Offline allowance check: the voucher proves the sender's server reserved this money for offline use.
+  // Returns { level: 'backed' | 'none' | 'unknown', cap } or { reject: '<reason>' }.
+  const checkAllowance = async (txn, now) => {
+    const al = txn.al;
+    if (!al) return { level: 'none' };
+    const serverPub = localStorage.getItem('sp_server_pub');
+    if (!serverPub) return { level: 'unknown' }; // this phone hasn't been online since install
+    const genuine = await verifyText(`SPAL1|${txn.from_pub}|${al.c}|${al.a}|${al.b}|${al.e}`, al.s, serverPub);
+    if (!genuine) return { reject: 'The offline allowance on this payment is not genuine' };
+    if (now > al.e) return { reject: 'The sender’s offline allowance has expired' };
+    if (txn.nonce < al.a || txn.nonce > al.b) return { reject: 'This payment is outside the sender’s allowance' };
+    // Total this phone has accepted from the same allowance (catches a double-spend aimed at us)
+    const seen = (await getAllTxns())
+      .filter(t => t.type === 'received' && t.from_pub === txn.from_pub && t.nonce >= al.a && t.nonce <= al.b)
+      .reduce((sum, t) => sum + t.amount, 0);
+    if (seen + txn.amount > al.c) return { reject: 'This sender has already used up their offline allowance with you' };
+    return { level: 'backed', cap: al.c };
+  };
 
   const handleQRDetected = useCallback(async (rawData) => {
     setScanning(false); // Stop scanning
@@ -113,13 +129,15 @@ export default function Receive() {
 
       // ── P2P QR: existing flow ───────────────────────────────────────
       // Map QR field names to internal field names
-      const { sig, ...payloadObj } = decoded || {};
+      // sig = the sender's signature over the rest; al = the server-signed allowance voucher (not signed by the sender)
+      const { sig, al, ...payloadObj } = decoded || {};
       const txn = {
         ...payloadObj,
+        al,
         from_pub: decoded?.from,
         signature: sig,
         created_at: decoded?.ts,
-        expires_at: decoded?.expires,
+        expires_at: decoded?.expires ?? (decoded?.ts ? decoded.ts + 60 : undefined), // QR is valid for 60 s
         payloadString: JSON.stringify(payloadObj),
       };
       setScannedTxn(txn);
@@ -165,10 +183,13 @@ export default function Receive() {
       // what signTransaction did on the sender side, preserving key order.
       const sigValid = await verifySignature(payloadObj, txn.signature, txn.from_pub);
 
-      if (sigValid) {
-        setVerifyResult({ valid: true, reason: 'Signature verified' });
-      } else {
+      if (!sigValid) {
         setVerifyResult({ valid: false, reason: 'Invalid Ed25519 signature' });
+      } else {
+        const backing = await checkAllowance(txn, now);
+        setVerifyResult(backing.reject
+          ? { valid: false, reason: backing.reject }
+          : { valid: true, reason: 'Signature verified', backing });
       }
     } catch (e) {
       setScannedTxn(null);
@@ -205,8 +226,26 @@ export default function Receive() {
     await addUnconfirmedReceived(scannedTxn.amount);
     await loadWalletState();
     await notifyPaymentReceived(scannedTxn.amount, scannedTxn.from_name || 'Someone');
-    setShowModal(false);
-    navigate('/home');
+    setAccepted(true);
+  };
+
+  // Receipt: this phone signs "I received payment <id> of <amount>"; the payer scans it as offline proof.
+  const handleReceiptKey = async (key) => {
+    if (receiptPin.length >= 6) return;
+    const pin = receiptPin + key;
+    setReceiptPin(pin);
+    if (pin.length < 6) return;
+    try {
+      const keys = await getKeys();
+      const privateKey = await unlockKey(keys, pin);
+      const ts = Math.floor(Date.now() / 1000);
+      const s = await signText(`SPRC1|${scannedTxn.id}|${scannedTxn.amount}|${keys.pubKey}|${ts}`, privateKey);
+      setReceiptQr(JSON.stringify({ rc: 1, id: scannedTxn.id, amt: scannedTxn.amount, by: keys.pubKey, ts, s }));
+      setReceiptStage('qr');
+    } catch {
+      setReceiptErr('Wrong PIN. Try again.');
+      setTimeout(() => { setReceiptPin(''); setReceiptErr(''); }, 1000);
+    }
   };
 
   const rejectAndRescan = () => {
@@ -251,8 +290,45 @@ export default function Receive() {
         </div>
       </div>
 
-      <Dialog open={showModal} onOpenChange={open => { if (!open) rejectAndRescan(); }}>
+      <Dialog open={showModal} onOpenChange={open => { if (!open) (accepted ? navigate('/home') : rejectAndRescan()); }}>
         <DialogContent className="sm:max-w-sm">
+          {accepted ? (
+            receiptStage === 'qr' ? (
+              <>
+                <DialogHeader className="items-center text-center">
+                  <DialogTitle>Show this receipt to the payer</DialogTitle>
+                  <DialogDescription>They scan it to get signed proof that you received {fmt(scannedTxn?.amount || 0)}.</DialogDescription>
+                </DialogHeader>
+                <div className="flex justify-center"><div className="rounded-2xl border bg-white p-3"><QRCodeSVG value={receiptQr} size={240} level="L" fgColor="#000000" bgColor="#ffffff" /></div></div>
+                <DialogFooter><Button className="w-full" onClick={() => navigate('/home')}>Done</Button></DialogFooter>
+              </>
+            ) : receiptStage === 'pin' ? (
+              <>
+                <DialogHeader className="items-center text-center">
+                  <DialogTitle>Enter your PIN</DialogTitle>
+                  <DialogDescription>Your PIN signs the receipt with your wallet key.</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-1">
+                  <PinDots length={receiptPin.length} error={!!receiptErr} />
+                  <p className="min-h-5 text-center text-sm text-destructive">{receiptErr}</p>
+                  <Keypad onKey={handleReceiptKey} onDelete={() => setReceiptPin(p => p.slice(0, -1))} />
+                </div>
+              </>
+            ) : (
+              <>
+                <DialogHeader className="items-center text-center">
+                  <div className="mb-2 flex size-14 items-center justify-center rounded-full bg-success/15 text-success"><CheckCircle2 className="size-7" /></div>
+                  <DialogTitle className="text-2xl tabular">{fmt(scannedTxn?.amount || 0)} accepted</DialogTitle>
+                  <DialogDescription>It settles automatically when either phone is online.</DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="grid grid-cols-2 gap-2 sm:flex">
+                  <Button variant="outline" onClick={() => navigate('/home')}>Done</Button>
+                  <Button onClick={() => setReceiptStage('pin')}><ReceiptText />Give receipt</Button>
+                </DialogFooter>
+              </>
+            )
+          ) : (
+          <>
           <DialogHeader className="items-center text-center">
             <div className={cn('mb-2 flex size-14 items-center justify-center rounded-full',
               verifyResult?.valid ? 'bg-success/15 text-success' : 'bg-destructive/15 text-destructive')}>
@@ -272,10 +348,19 @@ export default function Receive() {
               <dl className="space-y-2 rounded-lg border p-3 text-sm">
                 <div className="flex justify-between"><dt className="text-muted-foreground">Signature</dt><dd className="flex items-center gap-1 font-medium text-success"><ShieldCheck className="size-4" />Valid Ed25519</dd></div>
                 <div className="flex justify-between"><dt className="text-muted-foreground">Replay check</dt><dd className="font-medium text-success">First use</dd></div>
+                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Backing</dt>
+                  {verifyResult.backing?.level === 'backed'
+                    ? <dd className="flex items-center gap-1 text-right font-medium text-success"><ShieldCheck className="size-4 shrink-0" />Reserved by SyncPay</dd>
+                    : <dd className="flex items-center gap-1 text-right font-medium text-warning"><ShieldAlert className="size-4 shrink-0" />{verifyResult.backing?.level === 'unknown' ? 'Can’t check offline' : 'Not backed'}</dd>}
+                </div>
                 <div className="flex justify-between"><dt className="text-muted-foreground">Status</dt><dd className="flex items-center gap-1 font-medium text-warning"><Clock className="size-4" />Unconfirmed</dd></div>
               </dl>
               <p className="text-xs text-muted-foreground">
-                The payment is signed but settles only after a sync. For larger amounts, wait for confirmation before handing over goods.
+                {verifyResult.backing?.level === 'backed'
+                  ? 'The sender’s server has reserved this money for offline payments, so it will settle, unless they spend the same allowance elsewhere first.'
+                  : verifyResult.backing?.level === 'unknown'
+                    ? 'Go online once so this phone can check offline allowances. Until then, wait for settlement before handing over goods.'
+                    : 'This payment isn’t backed by an offline allowance and may fail if the sender lacks funds. Wait for settlement before handing over goods.'}
               </p>
             </div>
           )}
@@ -285,6 +370,8 @@ export default function Receive() {
             </Button>
             {verifyResult?.valid && <Button onClick={acceptPayment}>Accept</Button>}
           </DialogFooter>
+          </>
+          )}
         </DialogContent>
       </Dialog>
     </div>

@@ -21,6 +21,10 @@ export function initDB() {
     db.exec(schema);
   }
 
+  // Columns added after first release (SQLite has no ADD COLUMN IF NOT EXISTS)
+  const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!userCols.includes('token_version')) db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+
   console.log('✓ SQLite database initialized');
   return db;
 }

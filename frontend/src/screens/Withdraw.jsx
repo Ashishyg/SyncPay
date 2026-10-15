@@ -4,6 +4,7 @@ import { useWalletStore } from '../store/walletStore';
 import { getKeys, savePendingTxn } from '../services/storageService';
 import { deriveKeyFromPIN, decryptPrivateKey } from '../services/cryptoService';
 import { withdrawMoney } from '../services/apiService';
+import { applyServerWallet } from '../services/walletService';
 import { notifyPaymentSent } from '../services/notificationService';
 import Keypad from '../components/Keypad';
 import { Loader2, AlertCircle, WifiOff, Landmark, Info } from 'lucide-react';
@@ -19,8 +20,9 @@ const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDi
 
 export default function Withdraw() {
   const navigate = useNavigate();
-  const { user, confirmed_bal, locked_bal, isOnline, loadWalletState, updateBalance } = useWalletStore();
-  const spendable = confirmed_bal - locked_bal;
+  const { user, confirmed_bal, locked_bal, withdrawable, isOnline, loadWalletState } = useWalletStore();
+  // Money reserved for the offline allowance can't be withdrawn
+  const spendable = withdrawable ?? (confirmed_bal - locked_bal);
   const [amount, setAmount] = useState('');
   const [error, setError] = useState('');
   const [showPin, setShowPin] = useState(false);
@@ -66,9 +68,7 @@ export default function Withdraw() {
           ifsc: 'PKPT0000001'
         });
 
-        if (result.wallet) {
-          await updateBalance({ confirmed_bal: result.wallet.confirmed_bal, locked_bal: result.wallet.locked_bal });
-        }
+        await applyServerWallet(result.wallet);
         // Save to IndexedDB so it shows in History
         await savePendingTxn({
           id: 'wd-' + Date.now(),
@@ -122,7 +122,8 @@ export default function Withdraw() {
                 className="max-w-full bg-transparent text-center text-5xl font-semibold tracking-tight tabular outline-none placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
-            <p className="text-sm text-muted-foreground">Available <span className="font-medium text-foreground tabular">{fmt(spendable)}</span> · min ₹100</p>
+            <p className="text-sm text-muted-foreground">Withdrawable <span className="font-medium text-foreground tabular">{fmt(spendable)}</span> · min ₹100</p>
+            {confirmed_bal > spendable && <p className="text-xs text-muted-foreground"><span className="tabular">{fmt(confirmed_bal - spendable)}</span> is reserved for offline payments and returns 2 days after the allowance expires.</p>}
             <div className="flex flex-wrap justify-center gap-2">
               {[500, 1000, 2000, 5000].map(v => (
                 <Button key={v} variant="outline" size="sm" className="rounded-full" disabled={v * 100 > spendable} onClick={() => checkWD(String(v))}>

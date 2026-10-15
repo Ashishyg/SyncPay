@@ -9,6 +9,14 @@ export const useWalletStore = create((set, get) => ({
   nonce: 0,
   daily_spent: 0,
   daily_date: '',
+  reserved_bal: 0,
+  withdrawable: 0,
+  allowance: null,
+  allowance_used: 0,
+  reserved_bal: 0,
+  withdrawable: 0,
+  allowance: null,
+  allowance_used: 0,
 
   // User state
   user: null,

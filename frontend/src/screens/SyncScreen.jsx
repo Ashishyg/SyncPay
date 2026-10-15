@@ -11,10 +11,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useWalletStore } from '../store/walletStore';
 import { runSync } from '../services/syncService';
 import { hasToken } from '../services/apiService';
-import { getPendingTxns } from '../services/storageService';
-import { SMS_GATEWAY, smsSyncCandidates, sendSmsSync } from '../services/smsSync';
+import { getPendingTxns, getUnsettledTxns } from '../services/storageService';
+import { applyServerWallet, refreshAllowance } from '../services/walletService';
 import { notifySyncComplete } from '../services/notificationService';
-import { CloudCheck, CloudOff, RefreshCw, Clock, Inbox, Signal, PenLine, Database, CloudUpload, BadgeCheck, MessageSquareText } from 'lucide-react';
+import { CloudCheck, CloudOff, RefreshCw, Clock, Inbox, Signal, PenLine, Database, CloudUpload, BadgeCheck } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -59,7 +59,7 @@ function LogLine({ line, delay }) {
 }
 
 export default function SyncScreen() {
-  const { isOnline, confirmed_bal, locked_bal, loadWalletState, updateBalance } = useWalletStore();
+  const { isOnline, loadWalletState } = useWalletStore();
   const netInfo = useNetworkInfo();
 
   const [pendingTxns, setPendingTxns] = useState([]);
@@ -82,7 +82,7 @@ export default function SyncScreen() {
   // Load pending on mount + refresh
   const refreshPending = useCallback(async () => {
     try {
-      setPendingTxns(await smsSyncCandidates()); // sent + received payments awaiting settlement
+      setPendingTxns(await getUnsettledTxns()); // sent + received payments awaiting settlement
     } catch { setPendingTxns([]); }
   }, []);
 
@@ -145,7 +145,8 @@ export default function SyncScreen() {
       }
 
       if (result.serverWallet) {
-        await updateBalance({ confirmed_bal: result.serverWallet.confirmed_bal, locked_bal: result.serverWallet.locked_bal || 0 });
+        await applyServerWallet(result.serverWallet);
+        await refreshAllowance().catch(() => {});
         addLog(`Balance updated: ${fmt(result.serverWallet.confirmed_bal)}`, 'success');
       }
       await loadWalletState();
@@ -213,24 +214,6 @@ export default function SyncScreen() {
           </CardContent>
         </Card>
 
-        {SMS_GATEWAY && pendingTxns.length > 0 && (
-          <Card className={cn(!isOnline && 'border-primary/40')}>
-            <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><MessageSquareText className="size-5" /></div>
-              <div className="flex-1">
-                <p className="font-medium">No data? Sync by SMS</p>
-                <p className="text-sm text-muted-foreground">
-                  Sends up to 3 signed payments as a normal text from your SIM to {SMS_GATEWAY}. Standard SMS rates apply.
-                </p>
-              </div>
-              <Button variant={isOnline ? 'outline' : 'default'} className="w-full sm:w-auto"
-                onClick={async () => { await sendSmsSync(); refreshPending(); }}>
-                <MessageSquareText />Send SMS
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
         <div className="grid gap-6 lg:grid-cols-2">
           <Card>
             <CardHeader>
@@ -249,7 +232,7 @@ export default function SyncScreen() {
                       <div className="flex size-8 items-center justify-center rounded-full bg-warning/15 text-warning"><Clock className="size-4" /></div>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{t.recipientName || (t.id || '').slice(0, 12)}</p>
-                        <p className="text-xs capitalize text-muted-foreground">{t.type || 'payment'}{t.sms_sent_at ? ' · sent by SMS' : ''}</p>
+                        <p className="text-xs capitalize text-muted-foreground">{t.type || 'payment'}</p>
                       </div>
                       <p className="text-sm font-medium tabular">{fmt(t.amount)}</p>
                     </div>

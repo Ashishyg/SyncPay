@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { ArrowDownLeft, ArrowUpRight, Copy, ShieldCheck } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Copy, ShieldCheck, ReceiptText } from 'lucide-react';
 import { toast } from 'sonner';
 import { getTxnById } from '../services/storageService';
 import PageHeader from '@/components/PageHeader';
@@ -57,6 +57,15 @@ export default function TxnDetail() {
                 <dd className="text-right font-medium">{v}</dd>
               </div>
             ))}
+            {txn.receipt && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted-foreground">Receipt</dt>
+                <dd className="flex items-center gap-1 text-right font-medium text-success">
+                  <ReceiptText className="size-4 shrink-0" />
+                  {txn.receipt.fromMerchant ? `Signed by ${txn.recipientName}` : `Signed by receiver (${txn.receipt.by.slice(0, 6)}…)`}
+                </dd>
+              </div>
+            )}
             {txn.signature && (
               <div className="flex justify-between gap-4">
                 <dt className="text-muted-foreground">Signature</dt>

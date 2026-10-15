@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
+import { allowanceLeft } from '../services/walletService';
 import { getAllTxns } from '../services/storageService';
 import { Search, CheckCircle2, Users, AlertTriangle, WifiOff } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
@@ -16,7 +17,8 @@ const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN');
 
 export default function Send() {
   const navigate = useNavigate();
-  const { confirmed_bal, locked_bal, isOnline } = useWalletStore();
+  const wallet = useWalletStore();
+  const { isOnline } = wallet;
   const [search, setSearch] = useState('');
   const [amount, setAmount] = useState('');
   const [selected, setSelected] = useState(null);
@@ -38,13 +40,13 @@ export default function Send() {
     setRecents(unique.slice(0, 5));
   };
 
-  const spendable = confirmed_bal - locked_bal;
+  const spendable = allowanceLeft(wallet); // offline payments draw on the server-backed allowance
   const filtered = recents.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
 
   const checkAmt = (val) => {
     setAmount(val);
     const amt = parseInt(val) * 100;
-    if (amt > spendable) setLimitWarn('Insufficient spendable balance');
+    if (amt > spendable) setLimitWarn(spendable ? 'More than your offline allowance left' : 'No offline allowance yet: add money while online');
     else if (!isOnline && amt > 50000) setLimitWarn('Offline limit is ₹500 per transaction');
     else setLimitWarn('');
   };
@@ -75,7 +77,7 @@ export default function Send() {
                 className="max-w-full bg-transparent text-center text-5xl font-semibold tracking-tight tabular outline-none placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
               />
             </div>
-            <p className="text-sm text-muted-foreground">Available <span className="font-medium text-foreground tabular">{fmt(spendable)}</span></p>
+            <p className="text-sm text-muted-foreground">Offline allowance left <span className="font-medium text-foreground tabular">{fmt(spendable)}</span></p>
             <div className="flex flex-wrap justify-center gap-2">
               {[50, 100, 200, 500].map(v => (
                 <Button key={v} variant="outline" size="sm" className="rounded-full" onClick={() => checkAmt(String(v))}>₹{v}</Button>

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { addMoney as addMoneyAPI } from '../services/apiService';
 import { savePendingTxn } from '../services/storageService';
+import { applyServerWallet, refreshAllowance } from '../services/walletService';
 import { notifyBalanceUpdate } from '../services/notificationService';
 import { CheckCircle2, Loader2, AlertCircle, WifiOff, Smartphone, Landmark, CreditCard, Check } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
@@ -38,10 +39,8 @@ export default function AddMoney() {
     setLoading(true); setError('');
     try {
       const result = await addMoneyAPI(amt);
-      if (result.wallet) {
-        const { updateBalance } = useWalletStore.getState();
-        await updateBalance({ confirmed_bal: result.wallet.confirmed_bal, locked_bal: result.wallet.locked_bal });
-      }
+      await applyServerWallet(result.wallet);
+      await refreshAllowance().catch(() => {}); // new money can back a fresh offline allowance
       // Save to IndexedDB so it shows in History and Dashboard
       await savePendingTxn({
         id: 'topup-' + Date.now(),

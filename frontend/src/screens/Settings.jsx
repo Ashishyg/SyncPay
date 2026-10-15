@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Moon, Download, RefreshCw, Store, Gauge, ShieldCheck, ChevronRight, LogOut, Trash2, User, Loader2 } from 'lucide-react';
+import { Moon, Download, RefreshCw, Store, Gauge, ShieldCheck, ChevronRight, LogOut, Trash2, User, Loader2, KeyRound, MonitorSmartphone } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWalletStore } from '../store/walletStore';
 import { wipeKeys, getAllTxns } from '../services/storageService';
+import { logoutOtherDevices } from '../services/apiService';
+import ChangePinDialog from '@/components/ChangePinDialog';
 import PageHeader from '@/components/PageHeader';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -39,6 +41,17 @@ export default function Settings() {
   const navigate = useNavigate();
   const { user, logout, theme, toggleTheme } = useWalletStore();
   const [showWipe, setShowWipe] = useState(false);
+  const [showPin, setShowPin] = useState(false);
+
+  const needOnline = (fn) => () => (navigator.onLine ? fn() : toast.error('This needs an internet connection'));
+  const signOutOthers = async () => {
+    try {
+      await logoutOtherDevices(); // also stores this device's fresh session token
+      toast.success('Signed out of all other devices');
+    } catch {
+      toast.error('Couldn’t sign out other devices. Try again.');
+    }
+  };
   const [wiping, setWiping] = useState(false);
   const initial = (user?.name || 'U')[0].toUpperCase();
 
@@ -94,6 +107,8 @@ export default function Settings() {
         </Section>
 
         <Section title="Security">
+          <Row icon={KeyRound} label="Change PIN" desc="Re-encrypts your wallet key and updates your backup" onClick={needOnline(() => setShowPin(true))} />
+          <Row icon={MonitorSmartphone} label="Sign out other devices" desc="Ends every other session on your account" onClick={needOnline(signOutOthers)} />
           <Row icon={ShieldCheck} label="Key protection" desc="Your signing key is encrypted with your PIN (AES-256-GCM) and never leaves this device unencrypted." />
         </Section>
 
@@ -103,6 +118,8 @@ export default function Settings() {
         </div>
         <p className="text-center text-xs text-muted-foreground">SyncPay v1.0.0</p>
       </div>
+
+      <ChangePinDialog open={showPin} onOpenChange={setShowPin} />
 
       <Dialog open={showWipe} onOpenChange={setShowWipe}>
         <DialogContent className="sm:max-w-sm">

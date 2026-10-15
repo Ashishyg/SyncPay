@@ -41,6 +41,7 @@ export default function SendConfirm() {
           amount,
           recipientId: recipient.id,
           recipientName: recipient.name,
+          recipientPub: recipient.pub,
           privateKey,
           senderPubKey: keys.pubKey
         });
@@ -52,7 +53,9 @@ export default function SendConfirm() {
 
         navigate('/send/qr', { state: { ...result, amount, recipientName: recipient.name }, replace: true });
       } catch (e) {
-        if (e.message === 'INSUFFICIENT_BALANCE') setError('Insufficient spendable balance');
+        if (e.message === 'NO_ALLOWANCE') setError('No offline allowance yet. Go online once to get one.');
+        else if (e.message === 'INSUFFICIENT_ALLOWANCE') setError('More than your offline allowance left');
+        else if (e.message === 'ALLOWANCE_EXHAUSTED') setError('Allowance used up. Go online to renew it.');
         else if (e.message === 'EXCEEDS_OFFLINE_TXN_LIMIT') setError('Offline limit: ₹500 per txn');
         else if (e.message === 'EXCEEDS_DAILY_LIMIT') setError('Daily offline limit reached (₹2,000)');
         else setError('Wrong PIN. Try again.');

@@ -9,10 +9,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { unlockFunds, OFFLINE_TXN_LIMIT } from '../services/walletService';
+import { unlockFunds, OFFLINE_TXN_LIMIT, allowanceLeft } from '../services/walletService';
 import { useWalletStore } from '../store/walletStore';
 import { deletePendingTxn } from '../services/storageService';
-import { ArrowLeft, Store, BadgeCheck, AlertCircle, Lock } from 'lucide-react';
+import { ArrowLeft, Store, BadgeCheck, AlertCircle, Lock, ReceiptText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -26,7 +26,9 @@ const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDi
 export default function QRScreen() {
   const navigate   = useNavigate();
   const { state }  = useLocation();
-  const { loadWalletState, confirmed_bal, locked_bal } = useWalletStore();
+  const wallet = useWalletStore();
+  const { loadWalletState } = wallet;
+  const offlineLeft = allowanceLeft(wallet);
 
   // ── Mode detection ───────────────────────────────────────────────────
   const isMerchantPay = state?.mode === 'merchant_pay';
@@ -39,7 +41,9 @@ export default function QRScreen() {
   const [timeLeft, setTimeLeft] = useState(60);
 
   // ── Merchant Pay state ───────────────────────────────────────────────
-  const [merchantAmount, setMerchantAmount] = useState('');
+  // A merchant QR may carry the amount (paise); then the customer just confirms it
+  const fixedAmount = Number.isSafeInteger(merchantPayload?.amount) && merchantPayload.amount > 0 ? merchantPayload.amount : null;
+  const [merchantAmount, setMerchantAmount] = useState(fixedAmount ? String(fixedAmount / 100) : '');
   const [error, setError]                   = useState('');
 
   // ── P2P timer ────────────────────────────────────────────────────────
@@ -69,11 +73,10 @@ export default function QRScreen() {
     const amountPaise = Math.round(parseFloat(merchantAmount) * 100);
     if (!amountPaise || amountPaise <= 0) return setError('Enter a valid amount');
     if (amountPaise > OFFLINE_TXN_LIMIT) return setError(`Limit is ${fmt(OFFLINE_TXN_LIMIT)} per payment`);
-    const spendable = confirmed_bal - locked_bal;
-    if (amountPaise > spendable) return setError(`Insufficient balance. Available: ${fmt(spendable)}`);
+    if (amountPaise > offlineLeft) return setError(offlineLeft ? `More than your offline allowance (${fmt(offlineLeft)} left)` : 'No offline allowance yet. Go online once to get one.');
     if (!merchantPayload?.userId) return setError('Invalid merchant QR. Please scan again.');
     navigate('/send/confirm', {
-      state: { amount: amountPaise, recipient: { id: merchantPayload.userId, name: merchantPayload.name || 'Merchant' } },
+      state: { amount: amountPaise, recipient: { id: merchantPayload.userId, name: merchantPayload.name || 'Merchant', pub: merchantPayload.pubKey } },
     });
   };
 
@@ -96,15 +99,19 @@ export default function QRScreen() {
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg text-muted-foreground">₹</span>
               <Input id="mamt" type="number" inputMode="decimal" placeholder="0.00" className="h-12 pl-8 text-xl font-semibold tabular"
-                value={merchantAmount} onChange={e => { setMerchantAmount(e.target.value); setError(''); }} />
+                value={merchantAmount} readOnly={!!fixedAmount} onChange={e => { setMerchantAmount(e.target.value); setError(''); }} />
             </div>
-            <p className="text-xs text-muted-foreground">Available <span className="tabular">{fmt(confirmed_bal - locked_bal)}</span></p>
+            <p className="text-xs text-muted-foreground">
+              {fixedAmount ? 'Amount set by the merchant · ' : ''}Offline allowance left <span className="tabular">{fmt(offlineLeft)}</span>
+            </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {[10, 20, 50, 100, 200, 500].map(a => (
-              <Button key={a} variant="outline" size="sm" className="rounded-full" onClick={() => { setMerchantAmount(String(a)); setError(''); }}>₹{a}</Button>
-            ))}
-          </div>
+          {!fixedAmount && (
+            <div className="flex flex-wrap gap-2">
+              {[10, 20, 50, 100, 200, 500].map(a => (
+                <Button key={a} variant="outline" size="sm" className="rounded-full" onClick={() => { setMerchantAmount(String(a)); setError(''); }}>₹{a}</Button>
+              ))}
+            </div>
+          )}
           {error && <Alert variant="destructive"><AlertCircle /><AlertDescription>{error}</AlertDescription></Alert>}
         </div>
         <p className="mt-6 text-center text-xs text-muted-foreground">Works offline. The merchant scans your payment QR next.</p>
@@ -125,10 +132,10 @@ export default function QRScreen() {
           <p className="mt-1 text-4xl font-semibold tracking-tight tabular">{fmt(p2pAmount || 0)}</p>
         </div>
 
-        <div className="rounded-3xl border bg-white p-5 shadow-xl shadow-primary/10">
+        <div className="rounded-3xl border bg-white p-4 shadow-xl shadow-primary/10">
           {qrData
-            ? <QRCodeSVG value={qrData} size={260} level="M" fgColor="#18181b" bgColor="#ffffff" />
-            : <div className="flex size-[260px] items-center justify-center text-sm text-zinc-500">No QR data</div>}
+            ? <QRCodeSVG value={qrData} size={300} level="L" fgColor="#000000" bgColor="#ffffff" />
+            : <div className="flex size-[288px] items-center justify-center text-sm text-zinc-500">No QR data</div>}
         </div>
 
         <div className="w-full max-w-xs space-y-2">
@@ -148,6 +155,7 @@ export default function QRScreen() {
       <div className="grid grid-cols-2 gap-2">
         <Button size="lg" variant="outline" onClick={handleCancel}>Cancel</Button>
         <Button size="lg" onClick={() => navigate('/home', { replace: true })}>Done</Button>
+        <Button size="lg" variant="ghost" className="col-span-2" onClick={() => navigate('/scan', { replace: true })}><ReceiptText />Scan the receiver’s receipt</Button>
       </div>
     </Shell>
   );

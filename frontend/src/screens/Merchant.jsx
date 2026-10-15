@@ -7,6 +7,8 @@ import { Printer, Download, Share2, Check, Inbox, ScanLine } from 'lucide-react'
 import PageHeader from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -19,6 +21,9 @@ export default function Merchant() {
   const [collections, setCollections] = useState([]);
   const [totals, setTotals] = useState({ today: 0, all: 0 });
   const [loading, setLoading] = useState(true);
+  const [askAmount, setAskAmount] = useState(''); // optional: put the amount in the QR
+  const askPaise = Math.round(parseFloat(askAmount) * 100) || 0;
+  const qrValue = qrPayload && askPaise > 0 ? JSON.stringify({ ...JSON.parse(qrPayload), amount: askPaise }) : qrPayload;
   const [copied, setCopied] = useState(false);
   const printRef = useRef(null);
 
@@ -112,7 +117,7 @@ export default function Merchant() {
         await navigator.share({ title: `Pay ${user?.name}`, text: `Scan my SyncPay QR to pay me directly.`, url: window.location.href });
       } catch { /* user cancelled */ }
     } else {
-      navigator.clipboard.writeText(qrPayload);
+      navigator.clipboard.writeText(qrValue);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
@@ -134,7 +139,7 @@ export default function Merchant() {
               <Skeleton className="size-60 rounded-2xl" />
             ) : qrPayload ? (
               <div className="rounded-2xl border bg-white p-4" ref={printRef}>
-                <QRCodeSVG id="merchant-qr-svg" value={qrPayload} size={208} level="M" fgColor="#18181b" bgColor="#ffffff" />
+                <QRCodeSVG id="merchant-qr-svg" value={qrValue} size={208} level="M" fgColor="#18181b" bgColor="#ffffff" />
               </div>
             ) : (
               <div className="flex size-60 items-center justify-center rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">
@@ -142,6 +147,17 @@ export default function Merchant() {
               </div>
             )}
             <p className="break-all text-center font-mono text-xs text-muted-foreground">{user?.walletId || ''}</p>
+            <div className="w-full space-y-1.5">
+              <Label htmlFor="ask">Ask for an amount <span className="font-normal text-muted-foreground">(optional)</span></Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">₹</span>
+                <Input id="ask" type="number" inputMode="decimal" placeholder="Customer enters it" className="pl-7 tabular"
+                  value={askAmount} onChange={e => setAskAmount(e.target.value)} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {askPaise > 0 ? `This QR asks for ${fmt(askPaise)}; the customer just confirms.` : 'Leave empty for a reusable QR where customers type the amount.'}
+              </p>
+            </div>
             <div className="grid w-full grid-cols-3 gap-2">
               <Button variant="outline" onClick={handlePrint}><Printer />Print</Button>
               <Button variant="outline" onClick={handleDownload}><Download />Save</Button>

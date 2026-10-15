@@ -1,4 +1,5 @@
 import { getDB } from '../db.js';
+import { drawFromAllowance, walletView } from './allowance.js';
 import crypto from 'crypto';
 
 export const MAX_TXN_AMOUNT = 50000;      // ₹500 per offline txn (paise)
@@ -75,9 +76,13 @@ function reconcileOne(db, userId, txn) {
     .get(sender.id, dayStart, dayStart + 86400);
   if (spent + p.amount > DAILY_OFFLINE_LIMIT) return fail(p.id, 'DAILY_LIMIT_EXCEEDED');
 
-  const debit = db.prepare('UPDATE wallets SET confirmed_bal = confirmed_bal - ?, nonce_counter = MAX(nonce_counter, ?) WHERE user_id = ? AND confirmed_bal >= ?')
-    .run(p.amount, p.nonce, sender.id, p.amount);
-  if (!debit.changes) return fail(p.id, 'INSUFFICIENT_BALANCE');
+  // Pay from the offline allowance reserve when the payment falls inside one; otherwise (no voucher,
+  // or it's already used up by earlier claims) from the sender's free balance.
+  if (!drawFromAllowance(db, sender.id, p)) {
+    const debit = db.prepare('UPDATE wallets SET confirmed_bal = confirmed_bal - ?, nonce_counter = MAX(nonce_counter, ?) WHERE user_id = ? AND confirmed_bal >= ?')
+      .run(p.amount, p.nonce, sender.id, p.amount);
+    if (!debit.changes) return fail(p.id, 'INSUFFICIENT_BALANCE');
+  }
   if (recipient) db.prepare('UPDATE wallets SET confirmed_bal = confirmed_bal + ? WHERE user_id = ?').run(p.amount, recipient);
 
   const now = Math.floor(Date.now() / 1000);
@@ -103,6 +108,6 @@ export function reconcileTransactions(userId, transactions) {
   });
 
   results.filter(r => r.status === 'failed').forEach(r => console.log(`[Reconciler] ${r.id} FAILED: ${r.fail_reason}`));
-  const wallet = db.prepare('SELECT confirmed_bal, locked_bal, nonce_counter FROM wallets WHERE user_id = ?').get(userId);
+  const wallet = walletView(db.prepare('SELECT confirmed_bal, locked_bal, nonce_counter FROM wallets WHERE user_id = ?').get(userId));
   return { results, wallet, settled };
 }

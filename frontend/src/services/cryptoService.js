@@ -118,3 +118,33 @@ export async function verifySignature(payload, signatureB64, pubKeyB64) {
   
   return await window.crypto.subtle.verify('Ed25519', pubKey, sig, data);
 }
+
+// ── Plain-text signatures: allowance vouchers ("SPAL1|…") and receipts ("SPRC1|…") ──
+export async function signText(text, privateKey) {
+  const sig = await window.crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(text));
+  return arrayToBase64(sig);
+}
+
+export async function verifyText(text, signatureB64, pubKeyB64) {
+  try {
+    const pubKey = await window.crypto.subtle.importKey('raw', base64ToArray(pubKeyB64), { name: 'Ed25519' }, false, ['verify']);
+    return await window.crypto.subtle.verify('Ed25519', pubKey, base64ToArray(signatureB64), new TextEncoder().encode(text));
+  } catch {
+    return false; // malformed key or signature
+  }
+}
+
+// Unlock the stored signing key with a PIN (throws on a wrong PIN: AES-GCM authentication fails)
+export async function unlockKey(keys, pin) {
+  const aesKey = await deriveKeyFromPIN(pin, base64ToArray(keys.salt));
+  return decryptPrivateKey(keys.encPrivKey, keys.iv, aesKey);
+}
+
+// Change PIN: decrypt the key with the old PIN, re-encrypt it under a new PIN with a fresh salt.
+export async function reencryptKey(keys, oldPin, newPin) {
+  const oldAes = await deriveKeyFromPIN(oldPin, base64ToArray(keys.salt));
+  const raw = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToArray(keys.iv) }, oldAes, base64ToArray(keys.encPrivKey));
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const { encryptedKey, iv } = await encryptPrivateKey(raw, await deriveKeyFromPIN(newPin, salt));
+  return { pubKey: keys.pubKey, encryptedKey, iv, salt: arrayToBase64(salt) };
+}

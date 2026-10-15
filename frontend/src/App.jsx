@@ -6,6 +6,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import AppShell from './components/AppShell';
 import Logo from './components/Logo';
 import { startConnectivityWatcher } from './services/syncService';
+import { applyServerWallet, refreshAllowance } from './services/walletService';
 import { notifySyncComplete } from './services/notificationService';
 
 import Splash from './screens/Splash';
@@ -93,7 +94,7 @@ const router = createHashRouter([
 ]);
 
 export default function App() {
-  const { loadUserProfile, loadWalletState, setOnline, updateBalance } = useWalletStore();
+  const { loadUserProfile, loadWalletState, setOnline } = useWalletStore();
 
   useEffect(() => {
     loadUserProfile();
@@ -110,19 +111,8 @@ export default function App() {
     const cleanup = startConnectivityWatcher(async (result) => {
       console.log('[Auto-Sync] Completed:', result);
       // Update wallet balance from server response
-      if (result.serverWallet) {
-        const { getAllTxns } = await import('./services/storageService');
-        const all = await getAllTxns();
-        const localLocked = all.filter(t => t.status === 'pending').reduce((sum, t) => sum + t.amount, 0);
-        const localUnconfirmed = all.filter(t => t.status === 'unconfirmed_received').reduce((sum, t) => sum + t.amount, 0);
-        await updateBalance({
-          confirmed_bal: result.serverWallet.confirmed_bal,
-          locked_bal: localLocked,
-          // never move the local nonce backwards: unsynced txns may already use higher ones
-          nonce: Math.max(useWalletStore.getState().nonce, result.serverWallet.nonce_counter || 0),
-          unconfirmed_received: localUnconfirmed,
-        });
-      }
+      await applyServerWallet(result.serverWallet);
+      await refreshAllowance().catch(() => {});
       await loadWalletState();
       // Push a real notification
       await notifySyncComplete(result.confirmed, result.failed, result.serverWallet?.confirmed_bal);

@@ -9,7 +9,9 @@
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import jsQR from 'jsqr';
+import { detectQR, CAMERA_CONSTRAINTS } from '@/lib/qrScan';
+import { toast } from 'sonner';
+import { applyReceipt } from '../services/transactionService';
 import { X, Flashlight, CameraOff } from 'lucide-react';
 import Viewfinder from '@/components/Viewfinder';
 import { Button } from '@/components/ui/button';
@@ -32,9 +34,7 @@ export default function ScanQR() {
     let mounted = true;
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
+        const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
         if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
         const track = stream.getVideoTracks()[0];
@@ -60,19 +60,22 @@ export default function ScanQR() {
   }
 
   function startScanning() {
-    intervalRef.current = setInterval(() => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (!video || !canvas || video.readyState < 2) return;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(img.data, img.width, img.height);
-      if (code?.data) handleDetected(code.data);
+    intervalRef.current = setInterval(async () => {
+      const data = await detectQR(videoRef.current, canvasRef.current);
+      if (data) handleDetected(data);
     }, 150);
   }
+
+  const acceptReceipt = async (r) => {
+    try {
+      const txn = await applyReceipt(r);
+      toast.success(txn.to_pub ? `Receipt verified from ${txn.recipientName}` : 'Receipt verified');
+      navigate(`/history/${txn.id}`, { replace: true });
+    } catch (e) {
+      toast.error(e.message);
+      navigate(-1);
+    }
+  };
 
   const handleDetected = useCallback((rawData) => {
     if (detected) return;
@@ -87,10 +90,13 @@ export default function ScanQR() {
     }
 
     // Route by type
-    if (payload?.type === 'merchant_pay') {
+    if (payload?.rc === 1) {
+      // Receipt from the receiver of one of our payments
+      acceptReceipt(payload);
+    } else if (payload?.type === 'merchant_pay') {
       // Static merchant QR → open pay-merchant screen
       navigate('/qr', { state: { mode: 'merchant_pay', merchantPayload: JSON.stringify(payload) } });
-    } else if (payload?.qrType === 'dynamic' || payload?.id) {
+    } else if (payload?.id && payload?.sig) {
       // Dynamic P2P QR → open receive/verify screen
       navigate('/receive', { state: { prefillQR: rawData } });
     } else {

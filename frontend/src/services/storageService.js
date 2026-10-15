@@ -81,7 +81,11 @@ export async function getWalletState() {
     unconfirmed_received: 0,
     nonce: 0,
     daily_spent: 0,
-    daily_date: ''
+    daily_date: '',
+    reserved_bal: 0,      // server: part of the balance reserved for the offline allowance
+    withdrawable: 0,      // server: balance not reserved (can be withdrawn)
+    allowance: null,      // server-signed offline voucher { c, a, b, e, s, pub }
+    allowance_used: 0     // amount of the voucher used by payments made on this phone
   };
 }
 
@@ -104,6 +108,12 @@ export async function getPendingTxns() {
 export async function getAllTxns() {
   const db = await getDB();
   return db.getAll('pending_txns');
+}
+
+// Payments signed or received offline that haven't settled yet (sent + received)
+export async function getUnsettledTxns() {
+  const all = await getAllTxns();
+  return all.filter(t => (t.status === 'pending' || t.status === 'unconfirmed_received') && t.payloadString && t.signature);
 }
 
 export async function getTxnById(id) {

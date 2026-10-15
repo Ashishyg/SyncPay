@@ -4,8 +4,9 @@ import { useWalletStore } from '../store/walletStore';
 import { getKeys, wipeKeys, getUserProfile, saveKeys, saveUserProfile } from '../services/storageService';
 import { deriveKeyFromPIN, decryptPrivateKey } from '../services/cryptoService';
 import { loginUser, getBalance, sendOTP } from '../services/apiService';
+import { applyServerWallet, refreshAllowance } from '../services/walletService';
 import Keypad from '../components/Keypad';
-import jsQR from 'jsqr';
+import { detectQR, CAMERA_CONSTRAINTS } from '@/lib/qrScan';
 import { Lock, QrCode, AlertCircle, CheckCircle2, X } from 'lucide-react';
 import { PinDots } from '@/components/Keypad';
 import { Button } from '@/components/ui/button';
@@ -17,7 +18,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { incrementPinAttempt, resetPinAttempts, isLocked, pinAttempts, loadWalletState, updateBalance, setUser } = useWalletStore();
+  const { incrementPinAttempt, resetPinAttempts, isLocked, pinAttempts, loadWalletState, setUser } = useWalletStore();
   
   const [step, setStep] = useState(1);
   const [phone, setPhone] = useState('');
@@ -43,26 +44,16 @@ export default function Login() {
     setScanning(true);
     setError('');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-      });
+      const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play();
       }
       
-      scanInterval.current = setInterval(() => {
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        if (!video || !canvas || video.readyState < 2) return;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height);
-        if (code && code.data) handleImportQR(code.data);
+      scanInterval.current = setInterval(async () => {
+        const data = await detectQR(videoRef.current, canvasRef.current);
+        if (data) handleImportQR(data);
       }, 200);
     } catch (err) {
       setScanning(false);
@@ -205,25 +196,10 @@ export default function Login() {
           }
 
           // Update balance from server wallet data (stored during step 1)
-          const serverWallet = window.__spLoginWallet;
-          if (serverWallet) {
-            await updateBalance({
-              confirmed_bal: serverWallet.confirmed_bal || 0,
-              locked_bal: serverWallet.locked_bal || 0,
-            });
-          } else {
-            // Try fetching fresh balance
-            try {
-              const freshWallet = await getBalance();
-              if (freshWallet) {
-                await updateBalance({ 
-                  confirmed_bal: freshWallet.confirmed_bal, 
-                  locked_bal: freshWallet.locked_bal,
-                  nonce: Math.max(useWalletStore.getState().nonce, freshWallet.nonce_counter || 0)
-                });
-              }
-            } catch (apiErr) { console.warn('Offline mode login — using local balance'); }
-          }
+          try {
+            await applyServerWallet(await getBalance());
+            await refreshAllowance(); // offline allowance for this phone
+          } catch { console.warn('Offline mode login — using local balance'); }
           
           // Cleanup temp vars
           delete window.__spLoginWallet;

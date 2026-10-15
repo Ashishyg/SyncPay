@@ -3,21 +3,20 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { initDB, getDB } from './db.js';
 import { reconcileTransactions } from './services/reconciler.js';
+import { getOrIssueAllowance, walletView, SERVER_PUB } from './services/allowance.js';
 import { OTP_CHANNEL, sendOtp, checkOtp, OtpError } from './services/otp.js';
 import { startWhatsApp, sendWhatsApp, getWhatsAppStatus } from './services/whatsapp.js';
-import { verifyGatewaySignature, parseSyncSms, normalizePhone } from './services/sms.js';
-import { authMiddleware, JWT_SECRET, signOtpToken, isValidOtpToken } from './middleware/auth.js';
+import { authMiddleware, signSession, signOtpToken, isValidOtpToken } from './middleware/auth.js';
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(helmet());
 app.use(cors());
-app.use(express.json({ limit: '200kb', verify: (req, _res, buf) => { req.rawBody = buf; } })); // rawBody: SMS webhook HMAC
+app.use(express.json({ limit: '200kb' }));
 
 initDB();
 
@@ -106,7 +105,7 @@ app.post('/api/auth/register', verifyLimiter, (req, res) => {
       );
     })();
 
-    const token = jwt.sign({ id: userId, phone, pubKey }, JWT_SECRET, { expiresIn: '30d' });
+    const token = signSession({ id: userId, phone, pubKey, tv: 0 });
     console.log(`✅ User registered: ${phone}, userId: ${userId}`);
     res.json({ success: true, token, userId, walletId: 'PP·' + name.trim().toLowerCase().split(' ')[0] + '·' + pubKey.slice(0, 8) });
   } catch (error) {
@@ -127,7 +126,7 @@ app.post('/api/auth/login', verifyLimiter, (req, res) => {
     const user = getDB().prepare('SELECT * FROM users WHERE phone = ?').get(phone);
     if (!user) return res.status(404).json({ error: 'User not found. Please register.' });
 
-    const token = jwt.sign({ id: user.id, phone: user.phone, pubKey: user.pub_key }, JWT_SECRET, { expiresIn: '30d' });
+    const token = signSession({ id: user.id, phone: user.phone, pubKey: user.pub_key, tv: user.token_version });
     console.log(`✅ User login: ${user.phone}`);
     res.json({
       success: true,
@@ -147,9 +146,9 @@ app.post('/api/auth/login', verifyLimiter, (req, res) => {
 // WALLET: GET BALANCE
 // ============================
 app.get('/api/wallet/balance', authMiddleware, (req, res) => {
-  const wallet = getDB().prepare('SELECT confirmed_bal, locked_bal, nonce_counter, daily_spent, daily_date FROM wallets WHERE user_id = ?').get(req.user.id);
+  const wallet = getDB().prepare('SELECT confirmed_bal, locked_bal, nonce_counter FROM wallets WHERE user_id = ?').get(req.user.id);
   if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-  res.json({ wallet });
+  res.json({ wallet: walletView(wallet) });
 });
 
 // ============================
@@ -161,7 +160,7 @@ app.post('/api/wallet/add', authMiddleware, (req, res) => {
 
   const db = getDB();
   db.prepare('UPDATE wallets SET confirmed_bal = confirmed_bal + ? WHERE user_id = ?').run(amount, req.user.id);
-  const wallet = db.prepare('SELECT confirmed_bal, locked_bal FROM wallets WHERE user_id = ?').get(req.user.id);
+  const wallet = walletView(db.prepare('SELECT confirmed_bal, locked_bal, nonce_counter FROM wallets WHERE user_id = ?').get(req.user.id));
   console.log(`💰 Added ₹${amount / 100} to user ${req.user.id}`);
   res.json({ success: true, wallet });
 });
@@ -173,20 +172,21 @@ app.post('/api/sync', authMiddleware, (req, res) => {
   const { transactions } = req.body;
   if (!Array.isArray(transactions) || transactions.length === 0) return res.json({ results: [], wallet: null });
   if (transactions.length > 100) return res.status(400).json({ error: 'Max 100 transactions per sync' });
-  res.json(syncFor(req.user.id, transactions, 'app'));
+  const { results, wallet } = syncFor(req.user.id, transactions, 'app');
+  res.json({ results, wallet });
 });
 
 function syncFor(userId, transactions, via) {
   const { results, wallet, settled } = reconcileTransactions(userId, transactions);
   console.log(`🔄 Sync (${via}) for ${userId}: ${results.filter(r => r.status === 'confirmed').length} confirmed, ${results.filter(r => r.status === 'failed').length} failed`);
   notifySettled(settled);
-  return { results, wallet };
+  return { results, wallet, settled };
 }
 
 // WhatsApp payment alerts (best effort; no-op if WhatsApp isn't connected)
 const rupees = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 });
 function notifySettled(settled) {
-  const user = getDB().prepare('SELECT u.name, u.phone, w.confirmed_bal FROM users u JOIN wallets w ON w.user_id = u.id WHERE u.id = ?');
+  const user = getDB().prepare('SELECT u.name, u.phone, w.confirmed_bal + w.locked_bal AS confirmed_bal FROM users u JOIN wallets w ON w.user_id = u.id WHERE u.id = ?');
   for (const s of settled) {
     const from = user.get(s.from), to = s.to && user.get(s.to);
     if (to) sendWhatsApp(to.phone, `💰 SyncPay: ${rupees(s.amount)} received from ${from.name}. Balance: ${rupees(to.confirmed_bal)}`);
@@ -195,25 +195,35 @@ function notifySettled(settled) {
 }
 
 // ============================
-// SMS SYNC: webhook from the SMS gateway phone (sms-gate.app)
+// OFFLINE ALLOWANCE: server-signed voucher phones carry in every offline payment
 // ============================
-app.post('/api/sms/inbound', (req, res) => {
-  const key = process.env.SMS_WEBHOOK_SIGNING_KEY;
-  if (!key) return res.status(503).json({ error: 'SMS sync not configured' });
-  if (!verifyGatewaySignature(req.rawBody, req.get('X-Timestamp'), req.get('X-Signature'), key)) {
-    return res.status(401).json({ error: 'Bad signature' });
-  }
-  const { event, payload } = req.body || {};
-  if (event !== 'sms:received') return res.json({ ignored: 'event' });
-  const txns = parseSyncSms(payload?.message);
-  if (!txns) return res.json({ ignored: 'not a SyncPay message' });
+app.get('/api/server-key', (req, res) => res.json({ serverPub: SERVER_PUB }));
 
-  // The SIM that sent the SMS identifies the account (like a JWT does for /api/sync).
-  // Spoofing a number can't redirect money: amounts and recipients come from the signed payloads.
-  const user = getDB().prepare('SELECT id FROM users WHERE phone = ?').get(normalizePhone(payload.sender));
-  if (!user) return res.json({ ignored: 'unknown sender' });
-  if (!txns.length) return res.json({ results: [] });
-  res.json(syncFor(user.id, txns, 'sms'));
+app.post('/api/allowance', authMiddleware, (req, res) => {
+  const db = getDB();
+  const user = db.prepare('SELECT id, pub_key FROM users WHERE id = ?').get(req.user.id);
+  const voucher = getOrIssueAllowance(db, user);
+  const wallet = walletView(db.prepare('SELECT confirmed_bal, locked_bal, nonce_counter FROM wallets WHERE user_id = ?').get(req.user.id));
+  res.json({ voucher, wallet, serverPub: SERVER_PUB });
+});
+
+// ============================
+// ACCOUNT: re-encrypted key backup (after a PIN change), sign out other devices
+// ============================
+const isB64 = (v) => typeof v === 'string' && v.length > 0 && v.length < 4096 && /^[A-Za-z0-9+/]+=*$/.test(v);
+app.put('/api/auth/backup', authMiddleware, (req, res) => {
+  const { backup } = req.body || {};
+  if (!backup || !isB64(backup.enc) || !isB64(backup.iv) || !isB64(backup.salt)) return res.status(400).json({ error: 'Invalid backup' });
+  getDB().prepare('UPDATE users SET enc_key_bkp = ? WHERE id = ?').run(JSON.stringify({ enc: backup.enc, iv: backup.iv, salt: backup.salt }), req.user.id);
+  res.json({ success: true });
+});
+
+app.post('/api/auth/logout-others', authMiddleware, (req, res) => {
+  const db = getDB();
+  db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(req.user.id);
+  const u = db.prepare('SELECT id, phone, pub_key, token_version FROM users WHERE id = ?').get(req.user.id);
+  console.log(`🔒 Signed out other devices for ${u.phone}`);
+  res.json({ success: true, token: signSession({ id: u.id, phone: u.phone, pubKey: u.pub_key, tv: u.token_version }) });
 });
 
 // ============================
@@ -254,7 +264,7 @@ app.post('/api/wallet/withdraw', authMiddleware, (req, res) => {
   })();
   if (!ok) return res.status(400).json({ error: 'Insufficient balance' });
 
-  const wallet = db.prepare('SELECT confirmed_bal, locked_bal FROM wallets WHERE user_id = ?').get(req.user.id);
+  const wallet = walletView(db.prepare('SELECT confirmed_bal, locked_bal, nonce_counter FROM wallets WHERE user_id = ?').get(req.user.id));
   console.log(`🏦 Withdrawal ₹${amount / 100} by ${req.user.id}, UTR: ${utr}`);
   res.json({ success: true, utr, wallet });
 });
@@ -298,5 +308,4 @@ img{border:1px solid #ddd;border-radius:12px}
 app.listen(port, () => {
   console.log(`\n🚀 SyncPay backend running on http://localhost:${port}`);
   console.log(`🔐 OTP channel: ${OTP_CHANNEL}${OTP_CHANNEL === 'mock' ? ' (use 123456)' : ''}`);
-  console.log(`📩 SMS sync webhook: ${process.env.SMS_WEBHOOK_SIGNING_KEY ? 'enabled at POST /api/sms/inbound' : 'disabled (set SMS_WEBHOOK_SIGNING_KEY)'}\n`);
 });

@@ -5,7 +5,7 @@ import {
   Settings, ScanLine, Moon, Sun, ChevronsUpDown, User, LogOut, PanelLeft, Search, CloudCheck, CloudOff,
 } from 'lucide-react';
 import { useWalletStore } from '@/store/walletStore';
-import { smsSyncCandidates } from '@/services/smsSync';
+import { getUnsettledTxns } from '@/services/storageService';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -92,7 +92,7 @@ function SyncCard({ onNavigate }) {
   const { pathname } = useLocation();
   const isOnline = useWalletStore(s => s.isOnline);
   const [pending, setPending] = useState(0);
-  useEffect(() => { smsSyncCandidates().then(t => setPending(t.length)).catch(() => {}); }, [pathname, isOnline]);
+  useEffect(() => { getUnsettledTxns().then(t => setPending(t.length)).catch(() => {}); }, [pathname, isOnline]);
   return (
     <div className="rounded-xl bg-muted/40 ring-1 ring-foreground/10">
       <div className="space-y-2 rounded-lg bg-card p-3 ring-1 ring-foreground/5 shadow-[0_1px_0_0_rgb(0_0_0/0.05)]">

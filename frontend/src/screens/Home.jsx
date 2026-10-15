@@ -3,11 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { getAllTxns } from '../services/storageService';
 import { runSync, pullServerHistory } from '../services/syncService';
-import { SMS_GATEWAY } from '../services/smsSync';
 import { hasToken } from '../services/apiService';
-import { OFFLINE_TXN_LIMIT } from '../services/walletService';
+import { OFFLINE_TXN_LIMIT, allowanceLeft, applyServerWallet, refreshAllowance } from '../services/walletService';
 import {
-  ArrowUpRight, ArrowDownLeft, WifiOff, Lock, Clock, ChevronRight, Inbox, Wallet, PlusCircle, ScanLine, Store, Send, AlertTriangle,
+  ArrowUpRight, ArrowDownLeft, WifiOff, ShieldCheck, Clock, ChevronRight, Inbox, Wallet, PlusCircle, ScanLine, Store, Send, AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,7 +23,8 @@ const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function Home() {
   const navigate = useNavigate();
-  const { confirmed_bal, locked_bal, unconfirmed_received, isOnline, loadWalletState, updateBalance } = useWalletStore();
+  const wallet = useWalletStore();
+  const { confirmed_bal, locked_bal, unconfirmed_received, allowance, isOnline, loadWalletState } = wallet;
   const [txns, setTxns] = useState([]);
   const [stats, setStats] = useState({ count: 0, pending: 0, sent: 0, received: 0, dailySent: Array(7).fill(0), dailyReceived: Array(7).fill(0) });
   const [quickAmt, setQuickAmt] = useState('');
@@ -36,16 +36,8 @@ export default function Home() {
     if (!navigator.onLine || !hasToken()) return;
     try {
       const result = await runSync();
-      if (result.serverWallet) {
-        const all = await getAllTxns();
-        const localLocked = all.filter(t => t.status === 'pending').reduce((sum, t) => sum + t.amount, 0);
-        const localUnconfirmed = all.filter(t => t.status === 'unconfirmed_received').reduce((sum, t) => sum + t.amount, 0);
-        await updateBalance({
-          confirmed_bal: result.serverWallet.confirmed_bal,
-          locked_bal: localLocked,
-          unconfirmed_received: localUnconfirmed,
-        });
-      }
+      await applyServerWallet(result.serverWallet);
+      await refreshAllowance(); // fetch / renew the offline allowance while online
       await pullServerHistory();
       await loadWalletState();
       await loadTxns();
@@ -100,7 +92,9 @@ export default function Home() {
     setStats({ count: all.length, pending, sent, received, dailySent, dailyReceived });
   };
 
-  const spendable = confirmed_bal - locked_bal;
+  // Offline payments are limited to the server-backed allowance on this phone
+  const spendable = allowanceLeft(wallet);
+  const allowanceUntil = allowance?.e ? new Date(allowance.e * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : null;
   const dayLabels = Array.from({ length: 7 }, (_, i) => {
     if (i === 6) return 'Today';
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
@@ -109,13 +103,13 @@ export default function Home() {
 
   // Quick pay: same checks as the Send screen, then the normal PIN → signed QR flow
   const quickPaise = Math.round(parseFloat(quickAmt) * 100) || 0;
-  const quickError = !quickPaise ? '' : quickPaise > spendable ? 'More than your spendable balance'
+  const quickError = !quickPaise ? '' : quickPaise > spendable ? (spendable ? 'More than your offline allowance left' : 'No offline allowance yet: add money while online')
     : quickPaise > OFFLINE_TXN_LIMIT ? `Limit is ${formatINR(OFFLINE_TXN_LIMIT, 0)} per payment` : '';
   const quickPay = () => navigate('/send/confirm', { state: { amount: quickPaise, recipient: { name: 'QR payment', id: 'unknown' } } });
 
   const BALANCES = [
     { label: 'Wallet balance', value: confirmed_bal, icon: Wallet, path: '/history' },
-    { label: 'Locked in QR payments', value: locked_bal, icon: Lock, path: '/sync' },
+    { label: allowance ? `Offline allowance · until ${allowanceUntil}` : 'Offline allowance (none yet)', value: spendable, icon: ShieldCheck, path: '/sync' },
     { label: 'Incoming, not settled', value: unconfirmed_received || 0, icon: Clock, path: '/sync' },
   ];
 
@@ -130,10 +124,7 @@ export default function Home() {
         <Alert>
           <WifiOff />
           <AlertTitle>You’re offline</AlertTitle>
-          <AlertDescription>
-            You can still pay and receive by QR. Everything syncs automatically when you reconnect.
-            {SMS_GATEWAY && <button className="mt-1 font-medium underline-offset-4 hover:underline" onClick={() => navigate('/sync')}>No data for a while? Sync by SMS →</button>}
-          </AlertDescription>
+          <AlertDescription>You can still pay and receive by QR. Everything syncs automatically when you reconnect.</AlertDescription>
         </Alert>
       )}
 
@@ -154,7 +145,7 @@ export default function Home() {
             </div>
             <div className="space-y-1">
               <p className="text-3xl font-semibold tracking-tight tabular lg:text-4xl">{formatINR(spendable)}</p>
-              <p className="text-muted-foreground">Available to spend</p>
+              <p className="text-muted-foreground">Offline allowance left{allowance ? ` of ${formatINR(allowance.c, 0)}` : ''}</p>
             </div>
             <div className="flex items-center justify-between border-t pt-4">
               <div className="flex items-center gap-2">
@@ -188,7 +179,7 @@ export default function Home() {
         {/* Quick pay */}
         <Card>
           <CardHeader>
-            <CardDescription>Quick pay · spendable</CardDescription>
+            <CardDescription>Quick pay · offline allowance left</CardDescription>
             <p className="text-3xl font-semibold tabular">{formatINR(spendable)}</p>
           </CardHeader>
           <CardContent>

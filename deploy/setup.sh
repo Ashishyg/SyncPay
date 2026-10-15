@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # One-time SyncPay server setup for Ubuntu/Debian. Safe to re-run.
 #   sudo DOMAIN=syncpay.example.com bash setup.sh
+#   sudo DOMAIN=... SKIP_CADDY=1 bash setup.sh   # a web server (e.g. nginx) already owns ports 80/443:
+#                                                 # use deploy/nginx.conf instead of Caddy
 # Before running: point the domain's DNS A record at this server, and allow ports 80 + 443.
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-syncpay.acrossthe.cloud}"
+SKIP_CADDY="${SKIP_CADDY:-}"
 REPO="${REPO:-https://github.com/Ashishyg/SyncPay.git}"
 APP=/opt/syncpay
 WEB=/var/www/syncpay
@@ -25,7 +28,7 @@ fi
 node -v
 
 step "Caddy (web server with automatic HTTPS)"
-if ! command -v caddy >/dev/null; then
+if [ -z "$SKIP_CADDY" ] && ! command -v caddy >/dev/null; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' -o /etc/apt/sources.list.d/caddy-stable.list
   apt-get update -y
@@ -65,11 +68,15 @@ systemctl daemon-reload
 systemctl enable syncpay
 systemctl restart syncpay
 
-step "Caddy site for $DOMAIN"
-sed "s/^DOMAIN {/$DOMAIN {/" "$APP/deploy/Caddyfile" > /etc/caddy/Caddyfile
-caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-systemctl enable caddy
-systemctl reload caddy || systemctl restart caddy
+if [ -z "$SKIP_CADDY" ]; then
+  step "Caddy site for $DOMAIN"
+  sed "s/^DOMAIN {/$DOMAIN {/" "$APP/deploy/Caddyfile" > /etc/caddy/Caddyfile
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  systemctl enable caddy
+  systemctl reload caddy || systemctl restart caddy
+else
+  step "Skipping Caddy: configure your web server with deploy/nginx.conf (see README)"
+fi
 
 step "Firewall"
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then

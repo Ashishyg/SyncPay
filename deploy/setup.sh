@@ -28,6 +28,15 @@ fi
 node -v
 
 step "Caddy (web server with automatic HTTPS)"
+if [ -z "$SKIP_CADDY" ]; then
+  owner="$(ss -tlnpH '( sport = :80 or sport = :443 )' 2>/dev/null | grep -o 'users:(("[^"]*' | sed 's/.*"//' | sort -u | xargs)"
+  if [ -n "$owner" ] && ! { echo "$owner" | grep -qw caddy && systemctl is-active --quiet caddy; }; then
+    echo "Ports 80/443 are used by: $owner"
+    echo "That is not a system Caddy this script can extend (maybe Docker or nginx)."
+    echo "Nothing was changed. Re-run with SKIP_CADDY=1 and configure that web server, or ask for help."
+    exit 1
+  fi
+fi
 if [ -z "$SKIP_CADDY" ] && ! command -v caddy >/dev/null; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' -o /etc/apt/sources.list.d/caddy-stable.list
@@ -69,8 +78,16 @@ systemctl enable syncpay
 systemctl restart syncpay
 
 if [ -z "$SKIP_CADDY" ]; then
-  step "Caddy site for $DOMAIN"
-  sed "s/^DOMAIN {/$DOMAIN {/" "$APP/deploy/Caddyfile" > /etc/caddy/Caddyfile
+  step "Caddy site for $DOMAIN (added alongside any existing sites)"
+  sed "s/^DOMAIN {/$DOMAIN {/" "$APP/deploy/Caddyfile" > /etc/caddy/syncpay.caddy
+  if [ ! -f /etc/caddy/Caddyfile ]; then
+    echo "import syncpay.caddy" > /etc/caddy/Caddyfile
+  elif ! grep -q '^import syncpay.caddy' /etc/caddy/Caddyfile; then
+    cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak-$(date +%Y%m%d%H%M%S)"   # untouched copy of your config
+    printf '
+import syncpay.caddy
+' >> /etc/caddy/Caddyfile
+  fi
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
   systemctl enable caddy
   systemctl reload caddy || systemctl restart caddy

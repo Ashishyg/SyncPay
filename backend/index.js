@@ -14,6 +14,9 @@ import { authMiddleware, signSession, signOtpToken, isValidOtpToken } from './mi
 
 const app = express();
 const port = process.env.PORT || 3000;
+// Behind a reverse proxy (Caddy) every request arrives from 127.0.0.1: trust its X-Forwarded-For
+// so rate limits apply per real client. Only set this when a proxy is actually in front.
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
 
 app.use(helmet());
 app.use(cors());

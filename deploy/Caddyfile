@@ -1,0 +1,25 @@
+# SyncPay — Caddy serves the built app and proxies the API. HTTPS (Let's Encrypt) is automatic.
+# setup.sh copies this to /etc/caddy/Caddyfile with DOMAIN filled in.
+DOMAIN {
+	encode zstd gzip
+
+	# API → Node backend. Only /api is exposed; the /whatsapp linking page stays local-only.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# Installable web app (PWA). Unknown paths fall back to index.html (hash router).
+	handle {
+		root * /var/www/syncpay
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Phones must always fetch the newest service worker and HTML, or updates never reach them
+	@nocache path /sw.js /registerSW.js /index.html /manifest.webmanifest /
+	header @nocache Cache-Control "no-cache"
+
+	# Hashed assets never change
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+}

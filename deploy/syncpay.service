@@ -1,0 +1,24 @@
+[Unit]
+Description=SyncPay backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=syncpay
+Group=syncpay
+WorkingDirectory=/opt/syncpay/backend
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/syncpay/backend/.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=3
+
+# Hardening: the service can only write its own data (database, signing key, WhatsApp session)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/syncpay/backend/db /opt/syncpay/backend/keys /opt/syncpay/backend/wa_auth
+
+[Install]
+WantedBy=multi-user.target

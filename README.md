@@ -171,6 +171,23 @@ the server or the device's own records.
    `backend/wa_auth/` (git-ignored — keep it secret) and reconnects on restart.
 3. OTP codes now go out on WhatsApp, and users get a message whenever a payment settles.
 
+### Deploy to a VPS (Ubuntu/Debian)
+
+Files are in `deploy/`: Caddy serves the app with automatic HTTPS (Let's Encrypt) and proxies
+`/api` to the backend, which runs as a systemd service.
+
+1. Point the domain's DNS **A record** at the server's IP and allow ports 80 and 443.
+2. On the server:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Ashishyg/SyncPay/main/deploy/setup.sh -o setup.sh
+   sudo DOMAIN=syncpay.acrossthe.cloud bash setup.sh
+   ```
+3. Link WhatsApp through an SSH tunnel (the page is never public):
+   `ssh -L 3000:127.0.0.1:3000 <user>@<server>` → open `http://localhost:3000/whatsapp`.
+4. Later updates: `sudo bash /opt/syncpay/deploy/update.sh`.
+
+Back up `backend/keys/`, `backend/.env` and `backend/db/` on the server.
+
 ---
 
 ## Project structure

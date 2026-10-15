@@ -2,9 +2,15 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { addMoney as addMoneyAPI } from '../services/apiService';
-import { addTopUp } from '../services/walletService';
 import { savePendingTxn } from '../services/storageService';
 import { notifyBalanceUpdate } from '../services/notificationService';
+import { CheckCircle2, Loader2, AlertCircle, WifiOff, Smartphone, Landmark, CreditCard, Check } from 'lucide-react';
+import PageHeader from '@/components/PageHeader';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 
 const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 });
 const QUICK = [500, 1000, 2000, 5000];
@@ -22,20 +28,19 @@ export default function AddMoney() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [method, setMethod] = useState(0);
 
   const doAdd = async () => {
     const amt = Math.round(parseFloat(amount) * 100);
     if (!amt || amt <= 0) return setError('Enter a valid amount');
+    // Top-ups must be confirmed by the server; a local-only balance would be spendable offline but never settle
+    if (!isOnline) return setError('Internet required to add money');
     setLoading(true); setError('');
     try {
-      if (isOnline) {
-        const result = await addMoneyAPI(amt);
-        if (result.wallet) {
-          const { updateBalance } = useWalletStore.getState();
-          await updateBalance({ confirmed_bal: result.wallet.confirmed_bal, locked_bal: result.wallet.locked_bal });
-        }
-      } else {
-        await addTopUp(amt);
+      const result = await addMoneyAPI(amt);
+      if (result.wallet) {
+        const { updateBalance } = useWalletStore.getState();
+        await updateBalance({ confirmed_bal: result.wallet.confirmed_bal, locked_bal: result.wallet.locked_bal });
       }
       // Save to IndexedDB so it shows in History and Dashboard
       await savePendingTxn({
@@ -58,108 +63,81 @@ export default function AddMoney() {
     setLoading(false);
   };
 
-  const balancePct = Math.min(100, (confirmed_bal / 1000000) * 100);
 
   if (success) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-6 px-8">
-        <div className="w-24 h-24 rounded-full bg-emerald-500/10 flex items-center justify-center">
-          <span className="material-symbols-outlined text-5xl text-emerald-400">check_circle</span>
-        </div>
-        <div className="text-center">
-          <h2 className="text-2xl font-black text-white mb-2">Money Added!</h2>
-          <p className="text-slate-400">{fmt(Math.round(parseFloat(amount) * 100))} added to your wallet</p>
+      <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-20 text-center">
+        <div className="flex size-16 items-center justify-center rounded-full bg-success/15 text-success"><CheckCircle2 className="size-8" /></div>
+        <div>
+          <p className="text-3xl font-semibold tabular">{fmt(Math.round(parseFloat(amount) * 100))}</p>
+          <p className="mt-1 text-muted-foreground">added to your wallet</p>
         </div>
       </div>
     );
   }
 
+  const ICONS = [Smartphone, Landmark, CreditCard];
+  const amt = Math.round(parseFloat(amount) * 100) || 0;
+
   return (
-    <main className="min-h-screen pb-20 w-full">
-      {/* Header */}
-      <header className="fixed top-14 lg:top-0 right-0 lg:left-64 left-0 h-16 lg:h-20 bg-background/80 backdrop-blur-xl border-b border-outline-variant/15 px-4 lg:px-10 flex items-center gap-4 z-30">
-        <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/5">
-          <span className="material-symbols-outlined text-slate-400">arrow_back</span>
-        </button>
-        <h2 className="text-xl font-bold text-white tracking-tight">Add Money</h2>
-        {!isOnline && (
-          <div className="ml-auto flex items-center gap-2 px-3 py-1 rounded-full bg-tertiary/10 border border-tertiary/20">
-            <span className="w-2 h-2 bg-tertiary rounded-full"></span>
-            <span className="text-[10px] font-bold text-tertiary uppercase tracking-widest">Offline</span>
-          </div>
-        )}
-      </header>
-
-      <div className="pt-36 lg:pt-28 px-4 lg:px-10 max-w-2xl mx-auto space-y-6">
-        {/* Amount Card */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-3xl border-t border-l border-outline-variant/15 p-8 flex flex-col items-center gap-4">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Enter Amount</p>
-          <div className="flex items-center gap-2">
-            <span className="text-3xl font-bold text-slate-600">₹</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              value={amount}
-              onChange={e => { setAmount(e.target.value); setError(''); }}
-              placeholder="0"
-              className="bg-transparent border-none outline-none text-6xl font-black text-white text-center w-48 placeholder-slate-800 tracking-tight"
-            />
-          </div>
-          <p className="text-xs text-slate-500">Current balance: <span className="text-white font-bold">{fmt(confirmed_bal)}</span></p>
-
-          {/* Quick amounts */}
-          <div className="flex gap-2 flex-wrap justify-center">
-            {QUICK.map(v => (
-              <button key={v} onClick={() => { setAmount(String(v)); setError(''); }}
-                className="px-4 py-2 rounded-full bg-white/5 border border-white/10 text-sm font-bold text-slate-300 hover:bg-primary/10 hover:border-primary/20 hover:text-primary transition-all">
-                ₹{v.toLocaleString()}
-              </button>
-            ))}
-          </div>
-
-          {error && (
-            <div className="w-full bg-error/10 border border-error/20 rounded-xl px-4 py-3 text-sm text-error font-medium flex items-center gap-2">
-              <span className="material-symbols-outlined text-base">error</span>{error}
+    <div className="mx-auto max-w-xl">
+      <PageHeader title="Add money" description="Top up while online, then spend offline." back>
+        {!isOnline && <Badge variant="outline" className="gap-1.5"><WifiOff className="size-3" />Offline</Badge>}
+      </PageHeader>
+      <div className="space-y-4">
+        {!isOnline && <Alert><WifiOff /><AlertDescription>Adding money needs an internet connection.</AlertDescription></Alert>}
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-4">
+            <p className="text-sm text-muted-foreground">Amount</p>
+            <div className="flex items-baseline justify-center gap-1">
+              <span className="text-3xl font-medium text-muted-foreground">₹</span>
+              <input
+                type="number" inputMode="decimal" aria-label="Amount in rupees"
+                value={amount} onChange={e => { setAmount(e.target.value); setError(''); }} placeholder="0"
+                style={{ width: `${Math.max(String(amount).length, 1) + 0.25}ch` }}
+                className="max-w-full bg-transparent text-center text-5xl font-semibold tracking-tight tabular outline-none placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+              />
             </div>
-          )}
-        </div>
+            <p className="text-sm text-muted-foreground">Balance <span className="font-medium text-foreground tabular">{fmt(confirmed_bal)}</span> · up to ₹10,000 per top-up</p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {QUICK.map(v => (
+                <Button key={v} variant="outline" size="sm" className="rounded-full" onClick={() => { setAmount(String(v)); setError(''); }}>₹{v.toLocaleString('en-IN')}</Button>
+              ))}
+            </div>
+            {error && <Alert variant="destructive"><AlertCircle /><AlertDescription>{error}</AlertDescription></Alert>}
+          </CardContent>
+        </Card>
 
-        {/* Wallet usage bar */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Wallet Limit</p>
-            <p className="text-xs text-white font-bold">{fmt(confirmed_bal)} / ₹10,000</p>
-          </div>
-          <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-primary-container to-primary rounded-full transition-all duration-500"
-              style={{ width: `${balancePct}%` }} />
-          </div>
-        </div>
+        <Card>
+          <CardHeader><CardTitle className="text-base">Pay with</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {METHODS.map((m, i) => {
+              const Icon = ICONS[i];
+              const sel = method === i;
+              return (
+                <button key={m.label} onClick={() => setMethod(i)}
+                  className={cn('flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors',
+                    sel ? 'border-primary bg-accent' : 'hover:bg-accent/60')}>
+                  <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></div>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">{m.label}</p>
+                    <p className="text-xs text-muted-foreground">{m.desc}</p>
+                  </div>
+                  <div className={cn('flex size-5 items-center justify-center rounded-full border', sel && 'border-primary bg-primary text-primary-foreground')}>
+                    {sel && <Check className="size-3" />}
+                  </div>
+                </button>
+              );
+            })}
+            <p className="pt-1 text-xs text-muted-foreground">Demo build: top-ups are simulated, no real payment is taken.</p>
+          </CardContent>
+        </Card>
 
-        {/* Payment Methods */}
-        <div className="space-y-3">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Payment Method</p>
-          <div className="space-y-2">
-            {METHODS.map((m, i) => (
-              <button key={i} onClick={doAdd} disabled={!amount || loading}
-                className="w-full flex items-center gap-4 p-4 bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 hover:bg-white/3 active:scale-[0.99] transition-all disabled:opacity-40 disabled:cursor-not-allowed group">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${m.color}`}>
-                  <span className="material-symbols-outlined text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>{m.icon}</span>
-                </div>
-                <div className="flex-1 text-left">
-                  <p className="text-sm font-bold text-white">{m.label}</p>
-                  <p className="text-xs text-slate-500">{m.desc}</p>
-                </div>
-                {loading ? (
-                  <span className="material-symbols-outlined text-slate-600 animate-spin">progress_activity</span>
-                ) : (
-                  <span className="material-symbols-outlined text-slate-600 group-hover:text-primary transition-colors">chevron_right</span>
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
+        <Button size="lg" className="w-full" onClick={doAdd} disabled={!amt || loading || !isOnline}>
+          {loading && <Loader2 className="animate-spin" />}
+          {loading ? 'Adding…' : `Add ${amt ? fmt(amt) : 'money'}`}
+        </Button>
       </div>
-    </main>
+    </div>
   );
 }

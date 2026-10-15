@@ -83,14 +83,6 @@ export async function batchSync(transactions) {
   return data;
 }
 
-// ============================
-// USER LOOKUP
-// ============================
-export async function lookupUser(phone) {
-  const { data } = await api.get('/api/users/lookup', { params: { phone } });
-  return data;
-}
-
 export function hasToken() {
   return !!localStorage.getItem('sp_token');
 }
@@ -102,14 +94,9 @@ export function clearToken() {
 // ============================
 // MERCHANT
 // ============================
-export async function getMerchantQR() {
-  const { data } = await api.get('/api/merchant/qr');
-  return data; // { payload }
-}
-
-export async function payMerchant({ merchantUserId, amount, note }) {
-  const { data } = await api.post('/api/merchant/pay', { merchantUserId, amount, note });
-  return data; // { success, paymentId, merchantName, amount, wallet }
+export async function getTransactions() {
+  const { data } = await api.get('/api/transactions');
+  return data.transactions; // settled txns in both directions, newest first
 }
 
 export async function getMerchantCollections() {

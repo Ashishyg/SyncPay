@@ -2,16 +2,32 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { getAllTxns } from '../services/storageService';
-import { runSync } from '../services/syncService';
+import { runSync, pullServerHistory } from '../services/syncService';
+import { SMS_GATEWAY } from '../services/smsSync';
 import { hasToken } from '../services/apiService';
+import { OFFLINE_TXN_LIMIT } from '../services/walletService';
+import {
+  ArrowUpRight, ArrowDownLeft, WifiOff, Lock, Clock, ChevronRight, Inbox, Wallet, PlusCircle, ScanLine, Store, Send, AlertTriangle,
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import LineChart from '@/components/LineChart';
+import { StatusBadge, txnTime } from '@/components/TxnRow';
+import { formatINR, cn } from '@/lib/utils';
 
-const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN');
+const DAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export default function Home() {
   const navigate = useNavigate();
-  const { user, confirmed_bal, locked_bal, unconfirmed_received, isOnline, loadWalletState, updateBalance } = useWalletStore();
+  const { confirmed_bal, locked_bal, unconfirmed_received, isOnline, loadWalletState, updateBalance } = useWalletStore();
   const [txns, setTxns] = useState([]);
-  const [stats, setStats] = useState({ sent: 0, received: 0, spendTotal: 0, bars: [5,5,5,5,5,5,5] });
+  const [stats, setStats] = useState({ count: 0, pending: 0, sent: 0, received: 0, dailySent: Array(7).fill(0), dailyReceived: Array(7).fill(0) });
+  const [quickAmt, setQuickAmt] = useState('');
 
   const refresh = async () => { await loadWalletState(); await loadTxns(); };
 
@@ -30,6 +46,7 @@ export default function Home() {
           unconfirmed_received: localUnconfirmed,
         });
       }
+      await pullServerHistory();
       await loadWalletState();
       await loadTxns();
       if (result.confirmed + result.failed > 0) {
@@ -43,7 +60,6 @@ export default function Home() {
   useEffect(() => {
     refresh();
     syncAndRefresh(); // Sync pending txns when dashboard loads
-    // Refresh when page becomes visible, focused, or after sync/payment events
     const onVisChange = () => { if (document.visibilityState === 'visible') { refresh(); syncAndRefresh(); } };
     const onFocus = () => refresh();
     const onSync = () => refresh();
@@ -52,239 +68,228 @@ export default function Home() {
     window.addEventListener('focus', onFocus);
     window.addEventListener('pp-sync-complete', onSync);
     window.addEventListener('pp-notification', onNotif);
-    // Periodic refresh every 5s to catch any missed updates
     const interval = setInterval(refresh, 5000);
+    const serverPoll = setInterval(syncAndRefresh, 20000); // pick up payments settled by the other phone
     return () => {
       document.removeEventListener('visibilitychange', onVisChange);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('pp-sync-complete', onSync);
       window.removeEventListener('pp-notification', onNotif);
       clearInterval(interval);
+      clearInterval(serverPoll);
     };
   }, []);
-  const loadTxns = async () => { 
-    const all = await getAllTxns(); 
-    setTxns([...all].sort((a, b) => b.created_at - a.created_at).slice(0, 4)); 
-    
-    // Calculate stats
+
+  const loadTxns = async () => {
+    const all = await getAllTxns();
+    setTxns([...all].sort((a, b) => b.created_at - a.created_at).slice(0, 6));
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000;
     const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).getTime() / 1000;
-    
-    let sentMonth = 0;
-    let recMonth = 0;
-    const dailySpend = [0,0,0,0,0,0,0];
-    
+    let sent = 0, received = 0;
+    const dailySent = Array(7).fill(0), dailyReceived = Array(7).fill(0);
     all.forEach(t => {
       if (t.created_at >= startOfMonth) {
-        if (t.type === 'sent') sentMonth += t.amount;
-        if (t.type === 'received') recMonth += t.amount;
+        if (t.type === 'sent') sent += t.amount;
+        if (t.type === 'received') received += t.amount;
       }
-      if (t.type === 'sent') {
-         const daysAgo = Math.floor((todayEnd - t.created_at) / 86400);
-         if (daysAgo >= 0 && daysAgo < 7) {
-            dailySpend[6 - daysAgo] += t.amount;
-         }
-      }
+      const daysAgo = Math.floor((todayEnd - t.created_at) / 86400);
+      if (daysAgo >= 0 && daysAgo < 7) (t.type === 'sent' ? dailySent : dailyReceived)[6 - daysAgo] += t.amount;
     });
-
-    const maxSpend = Math.max(...dailySpend, 100); 
-    const bars = dailySpend.map(s => Math.max(4, Math.round((s / maxSpend) * 100)));
-    setStats({ sent: sentMonth, received: recMonth, spendTotal: dailySpend.reduce((a,b)=>a+b,0), bars });
+    const pending = all.filter(t => t.status === 'pending' || t.status === 'unconfirmed_received').length;
+    setStats({ count: all.length, pending, sent, received, dailySent, dailyReceived });
   };
 
   const spendable = confirmed_bal - locked_bal;
-  const initial = (user?.name || 'U')[0].toUpperCase();
-  
-  const dayNames = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
-  const dayLabels = Array.from({length: 7}).map((_, i) => {
-    if (i === 6) return 'TODAY';
-    const d = new Date();
-    d.setDate(d.getDate() - (6 - i));
-    return dayNames[d.getDay()];
+  const dayLabels = Array.from({ length: 7 }, (_, i) => {
+    if (i === 6) return 'Today';
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    return DAY[d.getDay()];
   });
 
+  // Quick pay: same checks as the Send screen, then the normal PIN → signed QR flow
+  const quickPaise = Math.round(parseFloat(quickAmt) * 100) || 0;
+  const quickError = !quickPaise ? '' : quickPaise > spendable ? 'More than your spendable balance'
+    : quickPaise > OFFLINE_TXN_LIMIT ? `Limit is ${formatINR(OFFLINE_TXN_LIMIT, 0)} per payment` : '';
+  const quickPay = () => navigate('/send/confirm', { state: { amount: quickPaise, recipient: { name: 'QR payment', id: 'unknown' } } });
+
+  const BALANCES = [
+    { label: 'Wallet balance', value: confirmed_bal, icon: Wallet, path: '/history' },
+    { label: 'Locked in QR payments', value: locked_bal, icon: Lock, path: '/sync' },
+    { label: 'Incoming, not settled', value: unconfirmed_received || 0, icon: Clock, path: '/sync' },
+  ];
+
   return (
-    <main className="min-h-screen pb-20 w-full">
-    {/* Top App Bar */}
-    <header className="fixed top-14 lg:top-0 right-0 lg:left-64 left-0 h-16 lg:h-20 bg-background/80 backdrop-blur-xl border-b border-outline-variant/15 px-4 lg:px-10 flex justify-between items-center z-30">
-    <h2 className="text-xl font-bold text-white font-headline tracking-tight">Dashboard Overview</h2>
-    <div className="flex items-center gap-6">
-    <div className="relative group">
-    <button className="hover:bg-white/5 rounded-full p-2 transition-colors relative" onClick={() => navigate('/notifications')}>
-    <span className="material-symbols-outlined text-slate-400 group-hover:text-primary">notifications</span>
-    <span className="absolute top-2 right-2 w-2 h-2 bg-primary rounded-full border-2 border-background"></span>
-    </button>
-    </div>
-    <button className="hover:bg-white/5 rounded-full p-2 transition-colors" onClick={() => navigate('/settings')}>
-    <span className="material-symbols-outlined text-slate-400 hover:text-primary">settings</span>
-    </button>
-    <div className="h-8 w-[1px] bg-outline-variant/20"></div>
-    <div className="flex items-center gap-3">
-    <span className="text-sm font-medium text-on-surface-variant">Hello, {user?.name || 'User'}</span>
-    <div onClick={() => navigate('/profile')} className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-container to-primary flex items-center justify-center text-white font-bold cursor-pointer">{initial}</div>
-    </div>
-    </div>
-    </header>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-xl font-bold tracking-tight lg:text-2xl">Dashboard</h1>
+        <Button onClick={() => navigate('/add-money')}><PlusCircle />Add money</Button>
+      </div>
 
-    <div className="pt-36 lg:pt-28 px-4 lg:px-10 max-w-7xl mx-auto space-y-8">
-    {/* Offline Banner */}
-    {!isOnline && (
-      <div className="bg-tertiary/10 border-l-4 border-tertiary p-4 rounded-r-xl flex items-center gap-4">
-      <span className="material-symbols-outlined text-tertiary" style={{fontVariationSettings: "'FILL' 1"}}>warning</span>
-      <div>
-      <p className="text-sm font-bold text-tertiary-fixed-dim uppercase tracking-wider">Offline Mode Active</p>
-      <p className="text-xs text-on-surface-variant">Your transaction data is being synced locally. Connect to internet to update real-time vault status.</p>
-      </div>
-      </div>
-    )}
+      {!isOnline && (
+        <Alert>
+          <WifiOff />
+          <AlertTitle>You’re offline</AlertTitle>
+          <AlertDescription>
+            You can still pay and receive by QR. Everything syncs automatically when you reconnect.
+            {SMS_GATEWAY && <button className="mt-1 font-medium underline-offset-4 hover:underline" onClick={() => navigate('/sync')}>No data for a while? Sync by SMS →</button>}
+          </AlertDescription>
+        </Alert>
+      )}
 
-    {/* Hero Section: Balance & Stats */}
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-    <div className="lg:col-span-2 bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl p-8 relative overflow-hidden flex flex-col justify-between min-h-[320px] shadow-[0_40px_64px_-12px_rgba(0,0,0,0.4)] border-t border-l border-outline-variant/15">
-    <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[100px] rounded-full -mr-20 -mt-20"></div>
-    <div className="relative z-10">
-    <div className="flex justify-between items-start">
-    <div>
-    <p className="label-md uppercase tracking-[0.2em] text-slate-500 font-bold text-xs mb-2">Total Balance</p>
-    <h3 className="text-6xl font-black tracking-tighter text-white font-display">
-    <span className="text-primary-fixed-dim opacity-50 text-4xl mr-1">₹</span>{(confirmed_bal / 100).toLocaleString('en-IN')}<span className="text-3xl font-medium opacity-70">.00</span>
-    </h3>
-    </div>
-    <div className="bg-primary/10 px-3 py-1 rounded-full border border-primary/20 flex items-center gap-2">
-    <span className={`w-2 h-2 ${isOnline ? 'bg-primary animate-pulse' : 'bg-tertiary'} rounded-full`}></span>
-    <span className={`text-[10px] font-bold ${isOnline ? 'text-primary' : 'text-tertiary'} uppercase tracking-widest`}>{isOnline ? 'Online' : 'Offline'}</span>
-    </div>
-    </div>
-    <div className="grid grid-cols-3 gap-8 mt-12">
-    <div>
-    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Spendable</p>
-    <p className="text-xl font-bold text-white">{fmt(spendable)}</p>
-    </div>
-    <div>
-    <p className="text-[10px] font-bold text-tertiary uppercase tracking-widest mb-1">Locked</p>
-    <p className="text-xl font-bold text-tertiary">{fmt(locked_bal)}</p>
-    </div>
-    <div>
-    <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest mb-1">Unconfirmed</p>
-    <p className="text-xl font-bold text-emerald-500">{fmt(unconfirmed_received || 0)}</p>
-    </div>
-    </div>
-    </div>
-    <div className="relative z-10 flex gap-4 mt-8">
-    <button onClick={() => navigate('/send')} className="flex-1 py-3 rounded-xl bg-gradient-to-r from-primary-container to-primary text-white font-bold text-sm tracking-wide shadow-lg shadow-primary/20 active:scale-[0.98] transition-transform">
-        Send Assets
-    </button>
-    <button onClick={() => navigate('/receive')} className="flex-1 py-3 rounded-xl bg-white/5 border border-white/10 text-white font-bold text-sm tracking-wide hover:bg-white/10 active:scale-[0.98] transition-transform">
-        Generate Invoice
-    </button>
-    </div>
-    </div>
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* Overview */}
+        <Card className="bg-linear-to-r from-[oklch(0.87_0_0/0.4)] to-[oklch(0.556_0_0/0.6)] dark:from-[oklch(0.4_0_0/0.4)] dark:to-[oklch(0.25_0_0/0.6)]">
+          <CardHeader><h2 className="text-2xl font-bold">Overview</h2></CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex justify-between">
+              <div className="space-y-1">
+                <p className="text-2xl font-semibold tabular">{stats.count}</p>
+                <p className="text-muted-foreground">Transactions</p>
+              </div>
+              <div className="flex flex-col items-center justify-center rounded-xl bg-muted px-4 py-2">
+                <p className="text-xl font-semibold tabular">{stats.pending}</p>
+                <p className="text-xs text-muted-foreground">Pending</p>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <p className="text-3xl font-semibold tracking-tight tabular lg:text-4xl">{formatINR(spendable)}</p>
+              <p className="text-muted-foreground">Available to spend</p>
+            </div>
+            <div className="flex items-center justify-between border-t pt-4">
+              <div className="flex items-center gap-2">
+                <span className="font-medium tabular">{formatINR(stats.received)}</span>
+                <Badge variant="secondary" className="bg-success/15 text-success">received this month</Badge>
+              </div>
+              <Button size="sm" onClick={() => navigate('/send')}><Send />Send</Button>
+            </div>
+          </CardContent>
+        </Card>
 
-    <div className="flex flex-col gap-6">
-    <div className="bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 rounded-2xl p-6 flex flex-col justify-between h-1/2">
-    <div>
-    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">Sent This Month</p>
-    <h4 className="text-3xl font-bold text-error">{fmt(stats.sent)}</h4>
-    </div>
-    <div className="flex items-center gap-2 text-error/60 text-xs font-medium">
-    <span className="material-symbols-outlined text-sm">trending_up</span>
-    <span>Spending trend</span>
-    </div>
-    </div>
-    <div className="bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 rounded-2xl p-6 flex flex-col justify-between h-1/2">
-    <div>
-    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">Received</p>
-    <h4 className="text-3xl font-bold text-emerald-400">{fmt(stats.received)}</h4>
-    </div>
-    <div className="flex items-center gap-2 text-emerald-400/60 text-xs font-medium">
-    <span className="material-symbols-outlined text-sm">trending_down</span>
-    <span>Inflow trend</span>
-    </div>
-    </div>
-    </div>
-    </div>
+        {/* Balances */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Balances</CardTitle>
+            <CardAction><Button variant="outline" size="icon-sm" onClick={() => navigate('/history')} aria-label="History"><ChevronRight /></Button></CardAction>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {BALANCES.map(({ label, value, icon: Icon, path }) => (
+              <button key={label} onClick={() => navigate(path)} className="block w-full rounded-md border px-4 py-3 text-left transition-colors hover:border-primary/30 hover:bg-muted">
+                <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+                  <div className="flex size-8 items-center justify-center rounded-full bg-muted text-foreground"><Icon className="size-4" /></div>
+                  {label}
+                </div>
+                <p className="text-base font-semibold tabular">{formatINR(value)}</p>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
 
-    {/* Quick Actions Toolbar */}
-    <div className="flex items-center justify-between gap-4 overflow-x-auto pb-2 scrollbar-hide">
-    <button onClick={() => navigate('/send')} className="flex flex-col items-center gap-3 min-w-[100px] p-6 rounded-2xl bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 hover:bg-primary-container/20 group transition-all">
-    <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">send</span>
-    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 group-hover:text-white">Send</span>
-    </button>
-    <button onClick={() => navigate('/receive')} className="flex flex-col items-center gap-3 min-w-[100px] p-6 rounded-2xl bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 hover:bg-primary-container/20 group transition-all">
-    <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">download</span>
-    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 group-hover:text-white">Receive</span>
-    </button>
-    <button onClick={() => navigate('/add-money')} className="flex flex-col items-center gap-3 min-w-[100px] p-6 rounded-2xl bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 hover:bg-primary-container/20 group transition-all">
-    <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">add_circle</span>
-    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 group-hover:text-white">Add</span>
-    </button>
-    <button onClick={() => navigate('/withdraw')} className="flex flex-col items-center gap-3 min-w-[100px] p-6 rounded-2xl bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 hover:bg-primary-container/20 group transition-all">
-    <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">account_balance_wallet</span>
-    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 group-hover:text-white">Withdraw</span>
-    </button>
-    <button onClick={() => navigate('/history')} className="flex flex-col items-center gap-3 min-w-[100px] p-6 rounded-2xl bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 hover:bg-primary-container/20 group transition-all">
-    <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">list_alt</span>
-    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 group-hover:text-white">History</span>
-    </button>
-    </div>
+        {/* Quick pay */}
+        <Card>
+          <CardHeader>
+            <CardDescription>Quick pay · spendable</CardDescription>
+            <p className="text-3xl font-semibold tabular">{formatINR(spendable)}</p>
+          </CardHeader>
+          <CardContent>
+            <Tabs defaultValue="send">
+              <TabsList className="w-full">
+                <TabsTrigger value="send">Send</TabsTrigger>
+                <TabsTrigger value="receive">Receive</TabsTrigger>
+              </TabsList>
+              <TabsContent value="send" className="space-y-4 pt-3">
+                <div className="space-y-2">
+                  <Label htmlFor="quick">Amount (₹)</Label>
+                  <Input id="quick" type="number" inputMode="numeric" placeholder="0" className="tabular" value={quickAmt} onChange={e => setQuickAmt(e.target.value)} />
+                  <div className="flex gap-2">
+                    {[50, 100, 200, 500].map(v => (
+                      <Button key={v} variant="outline" size="xs" className="flex-1" onClick={() => setQuickAmt(String(v))}>₹{v}</Button>
+                    ))}
+                  </div>
+                  {quickError && <p className="flex items-center gap-1 text-xs text-destructive"><AlertTriangle className="size-3" />{quickError}</p>}
+                </div>
+                <Button className="w-full" disabled={!quickPaise || !!quickError} onClick={quickPay}>Create payment QR</Button>
+                <p className="text-center text-xs text-muted-foreground">Works offline · anyone who scans can receive</p>
+              </TabsContent>
+              <TabsContent value="receive" className="space-y-3 pt-3">
+                <p className="text-muted-foreground">Scan the sender’s payment QR. The signature is checked on this phone, no internet needed.</p>
+                <Button className="w-full" onClick={() => navigate('/receive')}><ScanLine />Scan payment QR</Button>
+                <Button variant="outline" className="w-full" onClick={() => navigate('/merchant')}><Store />Show my merchant QR</Button>
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
+      </div>
 
-    {/* Bento Content Grid */}
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-    <div className="lg:col-span-2 bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 rounded-2xl p-8">
-    <div className="flex justify-between items-end mb-10">
-    <div>
-    <h5 className="text-white font-bold text-lg mb-1">Weekly Activity</h5>
-    <p className="text-xs text-slate-500">Transaction volume analysis</p>
-    </div>
-    <div className="flex gap-2">
-    <span className="px-3 py-1 rounded-full bg-white/5 text-[10px] font-bold uppercase tracking-wider text-slate-400 border border-white/5">Weekly</span>
-    <span className="px-3 py-1 rounded-full bg-primary/10 text-[10px] font-bold uppercase tracking-wider text-primary border border-primary/10">Daily</span>
-    </div>
-    </div>
-    <div className="flex items-end justify-between h-48 gap-4 px-2">
-    {stats.bars.map((h, i) => (
-      <div key={i} className="flex flex-col items-center gap-4 flex-1 h-full justify-end">
-      <div className={`w-full rounded-t-lg transition-all ${i === 6 ? 'bg-gradient-to-t from-primary-container to-primary shadow-[0_0_20px_rgba(108,92,231,0.3)]' : 'bg-white/5 hover:bg-white/10'}`} style={{height: `${h}%`}}></div>
-      <span className={`text-[10px] font-bold ${i === 6 ? 'text-primary' : 'text-slate-600'}`}>{dayLabels[i]}</span>
-      </div>
-    ))}
-    </div>
-    </div>
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* Recent activity */}
+        <Card>
+          <CardHeader><CardTitle>Recent activity</CardTitle></CardHeader>
+          <CardContent className="space-y-5">
+            {txns.length === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-8 text-center text-muted-foreground">
+                <Inbox className="size-8 opacity-40" />No transactions yet
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {txns.map(tx => {
+                  const sent = tx.type === 'sent';
+                  return (
+                    <button key={tx.id} onClick={() => navigate(`/history/${tx.id}`)} className="flex w-full items-center text-left">
+                      <div className={cn('flex size-8 shrink-0 items-center justify-center rounded-full', sent ? 'bg-muted' : 'bg-success/15 text-success')}>
+                        {sent ? <ArrowUpRight className="size-4" /> : <ArrowDownLeft className="size-4" />}
+                      </div>
+                      <div className="ml-4 min-w-0 space-y-1">
+                        <p className="flex items-center gap-2 font-medium leading-none">
+                          <span className="truncate">{tx.recipientName || (sent ? 'Payment sent' : 'Payment received')}</span>
+                          <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{sent ? 'Sent' : 'Received'}</Badge>
+                        </p>
+                        <p className="text-xs text-muted-foreground">{txnTime(tx.created_at)}</p>
+                      </div>
+                      <div className="ml-auto flex flex-col items-end gap-1 pl-2">
+                        <span className={cn('font-medium tabular', !sent && 'text-success')}>{sent ? '−' : '+'}{formatINR(tx.amount)}</span>
+                        {tx.status !== 'confirmed' && <StatusBadge status={tx.status} />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <Button variant="outline" className="w-full" onClick={() => navigate('/history')}>View all</Button>
+          </CardContent>
+        </Card>
 
-    {/* Recent Transactions */}
-    <div className="bg-[#0d0d15]/60 backdrop-blur-xl border-t border-l border-outline-variant/15 rounded-2xl p-8 flex flex-col">
-    <div className="flex justify-between items-center mb-8 gap-4">
-    <h5 className="text-white font-bold text-lg truncate">Transactions</h5>
-    <span onClick={() => navigate('/history')} className="text-[10px] font-bold uppercase tracking-widest text-primary hover:underline cursor-pointer flex-shrink-0">View All</span>
-    </div>
-    <div className="space-y-6 flex-1">
-    {txns.length === 0 ? (
-      <div className="text-center text-slate-500 text-sm py-4">No transactions yet</div>
-    ) : txns.map(tx => (
-      <div key={tx.id} onClick={() => navigate(`/history/${tx.id}`)} className="flex items-center gap-4 cursor-pointer hover:bg-white/5 p-2 -m-2 rounded-xl transition-colors">
-      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${tx.type === 'sent' ? 'bg-error/10 text-error' : 'bg-emerald-500/10 text-emerald-500'}`}>
-      <span className="material-symbols-outlined text-xl">{tx.type === 'sent' ? 'call_made' : 'call_received'}</span>
+        {/* Balance summary */}
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Balance summary</CardTitle>
+            <CardAction><Button variant="outline" size="sm" onClick={() => navigate('/sync')}>Sync status</Button></CardAction>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[
+                { label: 'Received this month', value: stats.received, icon: ArrowDownLeft },
+                { label: 'Sent this month', value: stats.sent, icon: ArrowUpRight },
+                { label: 'Not yet settled', value: locked_bal + (unconfirmed_received || 0), icon: Clock },
+              ].map(({ label, value, icon: Icon }) => (
+                <div key={label} className="space-y-1 rounded-md border p-4">
+                  <p className="flex items-center gap-1.5 text-muted-foreground"><Icon className="size-4" />{label}</p>
+                  <p className="text-xl font-semibold tabular">{formatINR(value)}</p>
+                </div>
+              ))}
+            </div>
+            <LineChart
+              labels={dayLabels}
+              ariaLabel="Money received and sent per day over the last 7 days"
+              format={(v) => formatINR(v)}
+              series={[
+                { key: 'received', label: 'Received', values: stats.dailyReceived, color: 'var(--chart-1)' },
+                { key: 'sent', label: 'Sent', values: stats.dailySent, color: 'var(--chart-2)', dashed: true },
+              ]}
+            />
+          </CardContent>
+        </Card>
       </div>
-      <div className="flex-1 min-w-0">
-      <p className="text-sm font-bold text-white truncate">{tx.recipientName || 'Payment'}</p>
-      <p className="text-xs text-slate-500">{new Date(tx.created_at * 1000).toLocaleTimeString()}</p>
-      </div>
-      <div className="text-right">
-      <p className={`text-sm font-bold ${tx.type === 'sent' ? 'text-white' : 'text-emerald-400'}`}>
-        {tx.type === 'sent' ? '-' : '+'}{fmt(tx.amount)}
-      </p>
-      <p className="text-[10px] text-slate-600 uppercase">{tx.status}</p>
-      </div>
-      </div>
-    ))}
     </div>
-    <button onClick={() => navigate('/history')} className="w-full mt-8 py-3 rounded-xl border border-outline-variant/20 text-slate-400 font-bold text-xs uppercase tracking-widest hover:bg-white/5 transition-colors">
-        Full History
-    </button>
-    </div>
-    </div>
-    </div>
-    </main>
   );
 }

@@ -1,15 +1,23 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { getKeys, wipeKeys, getUserProfile, saveKeys, saveUserProfile } from '../services/storageService';
 import { deriveKeyFromPIN, decryptPrivateKey } from '../services/cryptoService';
-import { loginUser, getBalance } from '../services/apiService';
+import { loginUser, getBalance, sendOTP } from '../services/apiService';
 import Keypad from '../components/Keypad';
 import jsQR from 'jsqr';
+import { Lock, QrCode, AlertCircle, CheckCircle2, X } from 'lucide-react';
+import { PinDots } from '@/components/Keypad';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { incrementPinAttempt, resetPinAttempts, isLocked, pinAttempts, loadUserProfile, loadWalletState, updateBalance, setUser } = useWalletStore();
+  const location = useLocation();
+  const { incrementPinAttempt, resetPinAttempts, isLocked, pinAttempts, loadWalletState, updateBalance, setUser } = useWalletStore();
   
   const [step, setStep] = useState(1);
   const [phone, setPhone] = useState('');
@@ -26,6 +34,8 @@ export default function Login() {
     getUserProfile().then(p => {
       if (p && p.phone) setPhone(p.phone.replace('+91', '').trim());
     });
+    // Back from the OTP screen with a verified otpToken → finish server login
+    if (location.state?.otpToken) completeLogin(location.state.phone, location.state.otpToken);
   }, []);
 
   // Camera handling for Import QR
@@ -102,17 +112,33 @@ export default function Login() {
       return;
     }
     setError('');
-    
+    const fullPhone = phone.startsWith('+') ? phone : `+91${phone}`;
+
+    // Offline: unlock the wallet already on this device with the PIN
+    if (!navigator.onLine) {
+      const [keys, profile] = await Promise.all([getKeys(), getUserProfile()]);
+      if (keys.pubKey && profile?.phone === fullPhone) return setStep(2);
+      return setError('You are offline. Connect to the internet to sign in on this device.');
+    }
+
     try {
-      const fullPhone = phone.startsWith('+') ? phone : `+91${phone}`;
-      const response = await loginUser({ phone: fullPhone });
-      
+      const { channel } = await sendOTP(fullPhone);
+      navigate('/otp', { state: { phone: fullPhone, mode: 'login', channel } });
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to send OTP');
+    }
+  };
+
+  const completeLogin = async (fullPhone, otpToken) => {
+    setPhone(fullPhone.replace('+91', ''));
+    try {
+      const response = await loginUser({ phone: fullPhone, otpToken });
       // Store server wallet data for use after PIN verification
       if (response.wallet) {
         window.__spLoginWallet = response.wallet;
       }
       window.__spLoginResponse = response;
-      
+
       const keys = await getKeys();
       if (!keys.pubKey && response.backup) {
         // Automatically restore backup from server for new device
@@ -132,6 +158,11 @@ export default function Login() {
         });
       } else if (!keys.pubKey) {
         setError('No wallet keys found on this device. Please register.');
+        return;
+      } else if (keys.pubKey !== response.pubKey) {
+        // Don't mix another account's keys/unsynced payments with this login
+        localStorage.removeItem('sp_token');
+        setError('This device holds a different wallet. Sync and wipe it from Settings first.');
         return;
       }
       setStep(2);
@@ -170,7 +201,7 @@ export default function Login() {
             };
             await setUser(profile);
           } else {
-            await loadUserProfile();
+            await setUser(profile); // also clears the signed-out flag
           }
 
           // Update balance from server wallet data (stored during step 1)
@@ -188,7 +219,7 @@ export default function Login() {
                 await updateBalance({ 
                   confirmed_bal: freshWallet.confirmed_bal, 
                   locked_bal: freshWallet.locked_bal,
-                  nonce: freshWallet.nonce_counter || 0
+                  nonce: Math.max(useWalletStore.getState().nonce, freshWallet.nonce_counter || 0)
                 });
               }
             } catch (apiErr) { console.warn('Offline mode login — using local balance'); }
@@ -219,180 +250,105 @@ export default function Login() {
 
   if (isLocked) {
     return (
-      <div className="fixed inset-0 bg-background flex flex-col items-center justify-center gap-6 px-8">
-        <div className="w-20 h-20 rounded-full bg-error/10 flex items-center justify-center">
-          <span className="material-symbols-outlined text-4xl text-error">lock</span>
-        </div>
-        <div className="text-center">
-          <h2 className="text-2xl font-black text-white mb-2">Wallet Locked</h2>
-          <p className="text-slate-400 text-sm">Too many wrong PIN attempts. Recover your wallet to continue.</p>
-        </div>
-        <button onClick={() => navigate('/recovery')}
-          className="w-full max-w-xs py-4 rounded-2xl bg-gradient-to-r from-primary-container to-primary text-white font-black text-sm tracking-wide">
-          Recover with Phrase
-        </button>
-      </div>
+      <Card>
+        <CardHeader className="items-center text-center">
+          <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive"><Lock className="size-6" /></div>
+          <CardTitle>Wallet locked</CardTitle>
+          <CardDescription>Too many wrong PIN attempts. The keys on this device were wiped — sign in again to restore them.</CardDescription>
+        </CardHeader>
+        <CardContent><Button className="w-full" onClick={() => navigate('/recovery')}>Restore wallet</Button></CardContent>
+      </Card>
     );
   }
 
+  const resetApp = async () => {
+    if (!window.confirm('Wipe all local data and reset the app?')) return;
+    localStorage.clear();
+    try {
+      const { wipeKeys } = await import('../services/storageService');
+      await wipeKeys();
+    } catch { /* ignore */ }
+    window.location.href = '/';
+  };
+  const isInfo = error.includes('imported');
+
   return (
-    <div className="fixed inset-0 bg-background flex flex-col overflow-hidden">
-      {/* Ambient glow */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-48 bg-primary/8 blur-[100px] rounded-full pointer-events-none" />
-
-      {/* Top Bar */}
-      <header className="flex items-center gap-3 px-6 pt-10 pb-4 flex-shrink-0 relative z-10 justify-between">
-        <div className="flex items-center gap-3">
-          <button onClick={() => step === 2 ? setStep(1) : navigate(-1)}
-            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/5 transition-colors">
-            <span className="material-symbols-outlined text-slate-400">arrow_back</span>
-          </button>
-          <h2 className="text-lg font-bold text-white">Sign In</h2>
-        </div>
-        <button 
-          onClick={async () => {
-            if (window.confirm('Wipe all local data and reset app?')) {
-              localStorage.clear();
-              try {
-                const { wipeKeys } = await import('../services/storageService');
-                await wipeKeys();
-              } catch(e) {}
-              window.location.href = '/';
-            }
-          }}
-          className="px-3 py-1.5 rounded-full bg-error/10 text-error text-xs font-bold border border-error/20"
-        >
-          Reset App
-        </button>
-      </header>
-
-      {/* ── STEP 1: Phone ── */}
+    <>
       {step === 1 && (
-        <div className="flex-1 flex flex-col px-6 relative z-10">
-          <div className="mb-10">
-            <h1 className="text-3xl font-black text-white tracking-tight mb-2">Welcome back</h1>
-            <p className="text-slate-400 text-sm">Enter your registered phone number to continue.</p>
-          </div>
-
-          {/* Phone Input */}
-          <div className="bg-[#0d0d15]/80 border border-outline-variant/20 rounded-2xl flex items-center gap-3 px-5 py-4 focus-within:border-primary/40 transition-colors mb-4">
-            <div className="flex items-center gap-2 pr-4 border-r border-outline-variant/20 flex-shrink-0">
-              <span className="text-sm font-bold text-slate-300">🇮🇳</span>
-              <span className="text-sm font-bold text-white">+91</span>
-            </div>
-            <input
-              type="tel"
-              placeholder="00000 00000"
-              value={phone}
-              onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-              className="flex-1 bg-transparent border-none outline-none text-white text-lg font-bold tracking-[0.15em] placeholder-slate-700"
-            />
-            <button onClick={startScanner} className="text-primary hover:text-primary-fixed-dim transition-colors flex-shrink-0">
-              <span className="material-symbols-outlined text-2xl">qr_code_scanner</span>
-            </button>
-          </div>
-
-          {error && (
-            <div className={`rounded-xl px-4 py-3 mb-4 flex items-center gap-3 text-sm font-medium ${
-              error.includes('imported')
-                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-                : 'bg-error/10 border border-error/20 text-error'
-            }`}>
-              <span className="material-symbols-outlined text-base flex-shrink-0">
-                {error.includes('imported') ? 'check_circle' : 'error'}
-              </span>
-              {error}
-            </div>
-          )}
-
-          <div className="text-center text-sm text-slate-500 mt-4">
-            Don't have an account?{' '}
-            <span onClick={() => navigate('/register')} className="text-primary font-bold cursor-pointer hover:underline">
-              Register
-            </span>
-          </div>
-
-          <div className="flex-1" />
-
-          <button
-            onClick={handlePhoneSubmit}
-            disabled={phone.length < 10}
-            className="w-full py-5 rounded-2xl bg-gradient-to-r from-primary-container to-primary text-white font-black text-base tracking-wide shadow-lg shadow-primary/20 disabled:opacity-30 disabled:cursor-not-allowed active:scale-[0.98] transition-all mb-8"
-          >
-            Continue
-          </button>
-        </div>
-      )}
-
-      {/* ── STEP 2: PIN ── */}
-      {step === 2 && (
-        <div className="flex-1 flex flex-col items-center px-6 relative z-10">
-          <div className="mb-8 text-center">
-            <h1 className="text-3xl font-black text-white tracking-tight mb-2">Enter PIN</h1>
-            <p className="text-slate-400 text-sm">Use your 6-digit security PIN</p>
-          </div>
-
-          {/* PIN Dots */}
-          <div className="flex gap-4 mb-4">
-            {[0,1,2,3,4,5].map(i => (
-              <div key={i} className={`w-4 h-4 rounded-full border-2 transition-all duration-150 ${
-                i < pin.length
-                  ? error ? 'bg-error border-error scale-110' : 'bg-primary border-primary scale-110'
-                  : 'bg-transparent border-slate-700'
-              }`} />
-            ))}
-          </div>
-
-          {error && (
-            <p className="text-error text-sm font-bold text-center mb-2">{error}</p>
-          )}
-
-          {pinAttempts > 0 && (
-            <p className="text-tertiary text-xs text-center mb-4">
-              {5 - pinAttempts} attempts remaining
-            </p>
-          )}
-
-          {/* Keypad — preserved component */}
-          <Keypad onKey={handleKey} onDelete={handleDelete} />
-
-          <p className="text-center text-sm text-slate-500 mt-6">
-            Forgot PIN?{' '}
-            <span onClick={() => navigate('/recovery')} className="text-primary font-bold cursor-pointer hover:underline">
-              Recover wallet
-            </span>
-          </p>
-        </div>
-      )}
-
-      {/* ── Scanner Modal ── */}
-      {scanning && (
-        <div className="fixed inset-0 bg-background/95 backdrop-blur-sm z-50 flex flex-col">
-          <div className="flex items-center gap-3 px-6 pt-10 pb-4">
-            <button onClick={stopScanner} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/5">
-              <span className="material-symbols-outlined text-slate-400">close</span>
-            </button>
-            <h3 className="text-lg font-bold text-white">Sync from another device</h3>
-          </div>
-          <p className="text-slate-400 text-sm px-6 mb-6">Scan the "Transfer QR" shown in your PC Settings page.</p>
-          <div className="flex-1 mx-6 mb-6 rounded-2xl bg-black overflow-hidden relative">
-            <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
-            <canvas ref={canvasRef} className="hidden" />
-            {/* Scan frame overlay */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-52 h-52 relative">
-                <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-primary rounded-tl-lg" />
-                <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-primary rounded-tr-lg" />
-                <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-primary rounded-bl-lg" />
-                <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-primary rounded-br-lg" />
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">Welcome back</CardTitle>
+            <CardDescription>Enter your registered mobile number. We’ll send you a one-time code.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="phone">Mobile number</Label>
+              <div className="flex gap-2">
+                <div className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">+91</div>
+                <Input id="phone" type="tel" inputMode="numeric" placeholder="98765 43210" className="tabular"
+                  value={phone} onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  onKeyDown={e => e.key === 'Enter' && phone.length >= 10 && handlePhoneSubmit()} />
+                <Button variant="outline" size="icon" onClick={startScanner} aria-label="Import wallet from QR"><QrCode /></Button>
               </div>
             </div>
+            {error && (
+              <Alert variant={isInfo ? 'default' : 'destructive'}>
+                {isInfo ? <CheckCircle2 /> : <AlertCircle />}
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+            <Button className="w-full" onClick={handlePhoneSubmit} disabled={phone.length < 10}>Continue</Button>
+            <p className="text-center text-sm text-muted-foreground">
+              New to SyncPay? <button className="font-medium text-primary hover:underline" onClick={() => navigate('/register')}>Create an account</button>
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === 2 && (
+        <Card>
+          <CardHeader className="text-center">
+            <CardTitle className="text-xl">Enter your PIN</CardTitle>
+            <CardDescription>Unlock the wallet for +91 {phone}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <PinDots length={pin.length} error={!!error && !isInfo} />
+            <div className="min-h-5 text-center text-sm">
+              {error ? <span className={isInfo ? 'text-success' : 'text-destructive'}>{error}</span>
+                : pinAttempts > 0 && <span className="text-warning">{5 - pinAttempts} attempts remaining</span>}
+            </div>
+            <Keypad onKey={handleKey} onDelete={handleDelete} />
+            <div className="flex justify-between">
+              <Button variant="ghost" size="sm" onClick={() => { setStep(1); setPin(''); }}>Use another number</Button>
+              <Button variant="ghost" size="sm" onClick={() => navigate('/recovery')}>Forgot PIN?</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="mt-6 text-center">
+        <Button variant="link" size="sm" className="text-muted-foreground" onClick={resetApp}>Reset app on this device</Button>
+      </div>
+
+      {scanning && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-background">
+          <div className="flex items-center gap-2 p-4">
+            <Button variant="ghost" size="icon" onClick={stopScanner} aria-label="Close"><X /></Button>
+            <div>
+              <p className="font-medium">Import wallet</p>
+              <p className="text-sm text-muted-foreground">Scan the transfer QR from your other device.</p>
+            </div>
           </div>
-          <button onClick={stopScanner} className="mx-6 mb-8 py-4 rounded-2xl bg-white/5 border border-white/10 text-white font-bold">
-            Cancel
-          </button>
+          <div className="relative mx-4 mb-4 flex-1 overflow-hidden rounded-2xl bg-black">
+            <video ref={videoRef} className="h-full w-full object-cover" playsInline muted />
+            <canvas ref={canvasRef} className="hidden" />
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className="size-56 rounded-3xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]" />
+            </div>
+          </div>
+          <Button variant="outline" className="mx-4 mb-6" onClick={stopScanner}>Cancel</Button>
         </div>
       )}
-    </div>
+    </>
   );
 }

@@ -8,12 +8,18 @@
  * This screen is a monitoring dashboard, not a manual trigger.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { runSync } from '../services/syncService';
 import { hasToken } from '../services/apiService';
-import { getAllTxns, getPendingTxns } from '../services/storageService';
+import { getPendingTxns } from '../services/storageService';
+import { SMS_GATEWAY, smsSyncCandidates, sendSmsSync } from '../services/smsSync';
 import { notifySyncComplete } from '../services/notificationService';
+import { CloudCheck, CloudOff, RefreshCw, Clock, Inbox, Signal, PenLine, Database, CloudUpload, BadgeCheck, MessageSquareText } from 'lucide-react';
+import PageHeader from '@/components/PageHeader';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 
 const fmt = (p) => '₹' + ((p || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 });
 
@@ -43,17 +49,16 @@ const NETWORK_LABELS = {
 function LogLine({ line, delay }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => { const t = setTimeout(() => setVisible(true), delay); return () => clearTimeout(t); }, [delay]);
-  const colors = { info: 'text-slate-400', success: 'text-emerald-400', warn: 'text-yellow-400', error: 'text-red-400', system: 'text-primary' };
+  const colors = { info: 'text-muted-foreground', success: 'text-success', warn: 'text-warning', error: 'text-destructive', system: 'text-primary' };
   return (
     <div className={`flex items-start gap-2 text-xs font-mono transition-all duration-300 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1'}`}>
-      <span className="text-slate-600 flex-shrink-0 select-none">{line.ts}</span>
-      <span className={colors[line.type] || 'text-slate-400'}>{line.text}</span>
+      <span className="flex-shrink-0 select-none text-muted-foreground/60">{line.ts}</span>
+      <span className={colors[line.type] || 'text-muted-foreground'}>{line.text}</span>
     </div>
   );
 }
 
 export default function SyncScreen() {
-  const navigate = useNavigate();
   const { isOnline, confirmed_bal, locked_bal, loadWalletState, updateBalance } = useWalletStore();
   const netInfo = useNetworkInfo();
 
@@ -77,8 +82,7 @@ export default function SyncScreen() {
   // Load pending on mount + refresh
   const refreshPending = useCallback(async () => {
     try {
-      const pending = await getPendingTxns();
-      setPendingTxns(pending || []);
+      setPendingTxns(await smsSyncCandidates()); // sent + received payments awaiting settlement
     } catch { setPendingTxns([]); }
   }, []);
 
@@ -170,173 +174,133 @@ export default function SyncScreen() {
     setSyncing(false);
   };
 
+  const StatusIcon = syncing ? RefreshCw : isOnline ? CloudCheck : CloudOff;
+  const STEPS = [
+    { icon: PenLine, text: 'The payment is signed on the sender’s phone (Ed25519).' },
+    { icon: Database, text: 'Both phones store it locally as pending.' },
+    { icon: CloudUpload, text: 'When either phone gets signal, it uploads the signed payment.' },
+    { icon: BadgeCheck, text: 'The server checks the signature and balance, then settles it.' },
+  ];
+
   return (
-    <main className="min-h-screen pb-24 w-full">
-      {/* Header */}
-      <header className="fixed top-14 lg:top-0 right-0 lg:left-64 left-0 h-16 lg:h-20 bg-background/80 backdrop-blur-xl border-b border-outline-variant/15 px-4 lg:px-10 flex items-center justify-between z-30">
-        <div className="flex items-center gap-4">
-          <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/5 transition-colors">
-            <span className="material-symbols-outlined text-slate-400">arrow_back</span>
-          </button>
-          <h2 className="text-xl font-bold text-white tracking-tight">Network & Sync</h2>
-        </div>
-        {/* Network badge */}
-        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold ${netLabel.bg} ${netLabel.color}`}>
-          <span className={`w-2 h-2 rounded-full ${netLabel.dot} ${isOnline ? 'animate-pulse' : ''}`} />
-          {isOnline ? netLabel.label : 'Offline'}
-          {netInfo.rtt && <span className="text-xs opacity-60">· {netInfo.rtt}ms</span>}
-        </div>
-      </header>
+    <div className="mx-auto max-w-4xl">
+      <PageHeader title="Sync status" description="Offline payments settle automatically when you reconnect." back>
+        <Badge variant="outline" className="gap-1.5">
+          <span className={cn('size-2 rounded-full', isOnline ? 'bg-success' : 'bg-warning')} />
+          {isOnline ? netLabel.label : 'Offline'}{isOnline && netInfo.rtt ? ` · ${netInfo.rtt}ms` : ''}
+        </Badge>
+      </PageHeader>
 
-      <div className="pt-36 lg:pt-28 px-4 lg:px-10 max-w-4xl mx-auto space-y-6">
-
-        {/* ── Status Card ────────────────────────────────────────── */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-3xl border-t border-l border-outline-variant/15 p-8 flex flex-col items-center gap-5">
-          <div className={`w-20 h-20 rounded-full flex items-center justify-center ${isOnline ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
-            <span className={`material-symbols-outlined text-4xl ${isOnline ? 'text-emerald-400' : 'text-red-400'} ${syncing ? 'animate-spin' : ''}`}
-              style={{ fontVariationSettings: "'FILL' 1" }}>
-              {syncing ? 'sync' : isOnline ? 'cloud_done' : 'cloud_off'}
-            </span>
-          </div>
-          <div className="text-center">
-            <h3 className="text-xl font-black text-white mb-1">
-              {syncing ? 'Syncing...' : isOnline ? 'Connected' : 'Offline'}
-            </h3>
-            <p className="text-xs text-slate-500">
-              {syncing ? 'Transmitting transactions to server...' :
-               isOnline ? (lastSync ? `Last synced: ${lastSync}` : 'Auto-sync is active. Transactions sync when you come online.') :
-               'Transactions are queued locally. They will sync automatically when you reconnect.'}
-            </p>
-          </div>
-
-          {/* Pending count */}
-          {pendingTxns.length > 0 && (
-            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-tertiary/10 border border-tertiary/20 w-full">
-              <span className="material-symbols-outlined text-tertiary text-xl">pending</span>
-              <div>
-                <p className="text-xs font-bold text-tertiary uppercase tracking-widest">Pending Settlement</p>
-                <p className="text-white font-bold text-sm">{pendingTxns.length} transaction{pendingTxns.length !== 1 ? 's' : ''} queued</p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Two-pane: Pending Queue + Sync Log ──────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Pending Queue */}
-          <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Transaction Queue</p>
-              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${pendingTxns.length > 0 ? 'bg-tertiary/10 text-tertiary' : 'bg-emerald-500/10 text-emerald-400'}`}>
-                {pendingTxns.length} pending
-              </span>
-            </div>
-
-            {pendingTxns.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 py-6 text-center">
-                <span className="material-symbols-outlined text-slate-700 text-3xl">inbox</span>
-                <p className="text-xs text-slate-600">All caught up</p>
-                <p className="text-[10px] text-slate-700">No pending transactions</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {pendingTxns.map((t, i) => (
-                  <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-white/3 border border-outline-variant/10">
-                    <div className="w-8 h-8 rounded-full bg-tertiary/10 flex items-center justify-center flex-shrink-0">
-                      <span className="material-symbols-outlined text-tertiary text-sm">pending</span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold text-white truncate">{t.recipientName || (t.id || '').slice(0, 12)}</p>
-                      <p className="text-[10px] text-slate-500">{fmt(t.amount)} · {t.type || 'payment'}</p>
-                    </div>
-                    <div className={`w-2 h-2 rounded-full ${syncing ? 'bg-primary animate-pulse' : 'bg-tertiary'}`} />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Sync Log Terminal */}
-          <div className="bg-[#0d0d15]/90 backdrop-blur-xl rounded-2xl border border-outline-variant/10 p-4 flex flex-col">
-            <div className="flex items-center gap-2 mb-3 pb-3 border-b border-outline-variant/10">
-              <div className="flex gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
-                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/60" />
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/60" />
-              </div>
-              <p className="text-[10px] font-mono text-slate-600 ml-2">SyncPay · sync worker</p>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-1 min-h-[180px] max-h-[240px]">
-              {logs.length === 0 ? (
-                <p className="text-[10px] font-mono text-slate-700 mt-2">$ waiting for sync activity...</p>
-              ) : (
-                logs.map((l, i) => <LogLine key={l.id} line={l} delay={i * 60} />)
-              )}
-              <div ref={logsEndRef} />
-            </div>
-          </div>
-        </div>
-
-        {/* ── 2G Resilience Proof (for judges) ────────────────────── */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 p-5">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
-              <span className="material-symbols-outlined text-primary text-xl">signal_cellular_alt</span>
+      <div className="space-y-6">
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-4 text-center sm:flex-row sm:text-left">
+            <div className={cn('flex size-14 shrink-0 items-center justify-center rounded-full',
+              isOnline ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning')}>
+              <StatusIcon className={cn('size-7', syncing && 'animate-spin')} />
             </div>
             <div className="flex-1">
-              <p className="text-sm font-black text-white mb-1">2G Resilience</p>
-              <p className="text-xs text-slate-400 leading-relaxed mb-3">
-                In Chrome DevTools → Network → set throttling to <strong className="text-white">Slow 2G</strong> (400ms RTT, 400kbps). 
-                Make a payment, then watch it settle on this screen — even in this degraded environment.
+              <p className="text-lg font-semibold">{syncing ? 'Syncing…' : isOnline ? 'Connected' : 'Offline'}</p>
+              <p className="text-sm text-muted-foreground">
+                {syncing ? 'Uploading signed payments to the server.'
+                  : isOnline ? (lastSync ? `Last synced ${lastSync}` : 'Auto-sync is on. Pending payments upload as soon as you’re online.')
+                  : 'Payments are queued on this device and will sync when you reconnect.'}
               </p>
-              <div className="bg-primary/5 border border-primary/15 rounded-xl px-4 py-3">
-                <p className="text-xs text-primary/80 font-mono leading-relaxed">
-                  Shannon's Channel Capacity: C = B × log₂(1 + SNR)<br />
-                  Token size: ~200 bytes (1,600 bits)<br />
-                  2G capacity: 400 kbps → transmit time: <b className="text-emerald-400">4ms</b><br />
-                  <span className="text-emerald-400">Chrome's Slow 2G is more conservative than real 2G. If it works here, it works on real 2G.</span>
-                </p>
-              </div>
             </div>
-          </div>
-        </div>
+            <Button onClick={handleManualSync} disabled={syncing || !isOnline} className="w-full sm:w-auto">
+              <RefreshCw className={cn(syncing && 'animate-spin')} />
+              {syncing ? 'Syncing…' : isOnline ? 'Sync now' : 'Waiting for network'}
+            </Button>
+          </CardContent>
+        </Card>
 
-        {/* ── How it Works ────────────────────────────────────────── */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 p-5">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">How Settlement Works</p>
-          <div className="space-y-3">
-            {[
-              { step: '1', text: 'Payment is created offline with Ed25519 digital signature', icon: 'lock' },
-              { step: '2', text: 'Transaction is stored in local IndexedDB with pending status', icon: 'storage' },
-              { step: '3', text: 'When network is detected, auto-sync sends signed payloads to server', icon: 'cloud_sync' },
-              { step: '4', text: 'Server verifies signatures, updates balances, confirms settlement', icon: 'verified' },
-            ].map((item, i) => (
-              <div key={i} className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                  <span className="material-symbols-outlined text-primary text-base">{item.icon}</span>
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  <span className="text-primary font-bold mr-1">Step {item.step}:</span>
-                  {item.text}
+        {SMS_GATEWAY && pendingTxns.length > 0 && (
+          <Card className={cn(!isOnline && 'border-primary/40')}>
+            <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><MessageSquareText className="size-5" /></div>
+              <div className="flex-1">
+                <p className="font-medium">No data? Sync by SMS</p>
+                <p className="text-sm text-muted-foreground">
+                  Sends up to 3 signed payments as a normal text from your SIM to {SMS_GATEWAY}. Standard SMS rates apply.
                 </p>
               </div>
-            ))}
-          </div>
+              <Button variant={isOnline ? 'outline' : 'default'} className="w-full sm:w-auto"
+                onClick={async () => { await sendSmsSync(); refreshPending(); }}>
+                <MessageSquareText />Send SMS
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Queue</CardTitle>
+              <CardDescription>{pendingTxns.length ? `${pendingTxns.length} payment${pendingTxns.length !== 1 ? 's' : ''} waiting to settle` : 'Nothing waiting'}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pendingTxns.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-6 text-center text-sm text-muted-foreground">
+                  <Inbox className="size-8 opacity-40" />All caught up
+                </div>
+              ) : (
+                <div className="-mx-2">
+                  {pendingTxns.map((t, i) => (
+                    <div key={i} className="flex items-center gap-3 rounded-lg px-2 py-2">
+                      <div className="flex size-8 items-center justify-center rounded-full bg-warning/15 text-warning"><Clock className="size-4" /></div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{t.recipientName || (t.id || '').slice(0, 12)}</p>
+                        <p className="text-xs capitalize text-muted-foreground">{t.type || 'payment'}{t.sms_sent_at ? ' · sent by SMS' : ''}</p>
+                      </div>
+                      <p className="text-sm font-medium tabular">{fmt(t.amount)}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Sync log</CardTitle>
+              <CardDescription>Details of the last manual sync</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-56 space-y-1 overflow-y-auto rounded-lg bg-muted/60 p-3">
+                {logs.length === 0
+                  ? <p className="font-mono text-xs text-muted-foreground">Waiting for sync activity…</p>
+                  : logs.map((l, i) => <LogLine key={l.id} line={l} delay={i * 60} />)}
+                <div ref={logsEndRef} />
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
-        {/* ── Sync Button (manual fallback) ───────────────────────── */}
-        <button
-          onClick={handleManualSync}
-          disabled={syncing || !isOnline}
-          className="w-full py-5 rounded-2xl bg-gradient-to-r from-primary-container to-primary text-white font-black text-base tracking-wide shadow-lg shadow-primary/20 disabled:opacity-30 disabled:cursor-not-allowed active:scale-[0.98] transition-all flex items-center justify-center gap-3"
-        >
-          <span className={`material-symbols-outlined text-xl ${syncing ? 'animate-spin' : ''}`}>
-            {syncing ? 'sync' : 'cloud_sync'}
-          </span>
-          {syncing ? 'Syncing...' : !isOnline ? 'Go Online to Sync' : 'Sync Now'}
-        </button>
-
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card>
+            <CardHeader><CardTitle>How settlement works</CardTitle></CardHeader>
+            <CardContent>
+              <ol className="space-y-3">
+                {STEPS.map(({ icon: Icon, text }, i) => (
+                  <li key={i} className="flex items-start gap-3 text-sm">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" /></div>
+                    <span className="pt-1.5 text-muted-foreground">{text}</span>
+                  </li>
+                ))}
+              </ol>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <div className="mb-1 flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Signal className="size-4" /></div>
+              <CardTitle>Built for weak signal</CardTitle>
+              <CardDescription>
+                Each signed payment is roughly 200 bytes, so a sync completes even on a congested 2G connection.
+                Try it: set Chrome DevTools → Network to “Slow 3G” or “Slow 2G”, then sync.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }

@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
-import { RouterProvider, createHashRouter, Outlet } from 'react-router-dom';
+import { RouterProvider, createHashRouter, Outlet, Navigate } from 'react-router-dom';
 import { useWalletStore } from './store/walletStore';
-import { ToastContainer } from './components/Toast';
-import Sidebar from './components/Sidebar';
+import { Toaster } from '@/components/ui/sonner';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import AppShell from './components/AppShell';
+import Logo from './components/Logo';
 import { startConnectivityWatcher } from './services/syncService';
 import { notifySyncComplete } from './services/notificationService';
 
@@ -31,31 +33,28 @@ import Settings from './screens/Settings';
 import ScanQR from './screens/ScanQR';
 import SecureContextBanner from './components/SecureContextBanner';
 
-// Auth screens render centered without sidebar
+// Auth screens: centered column with the brand on top
 function AuthLayout() {
   return (
-    <div className="auth-layout">
-      <div className="auth-card"><Outlet /></div>
-    </div>
-  );
-}
-
-// Full-screen layout (no sidebar) — used for camera/QR screens on mobile
-function FullScreenLayout() {
-  return <Outlet />;
-}
-
-// Dashboard screens render with sidebar
-function DashboardLayout() {
-  return (
-    <div className="flex w-full min-h-screen bg-background text-on-background relative">
-      <Sidebar />
-      {/* lg: offset sidebar width, mobile: top bar + bottom nav padding */}
-      <div className="flex-1 lg:ml-64 min-w-0 flex flex-col relative pt-14 lg:pt-0 pb-16 lg:pb-0">
+    <div className="flex min-h-svh flex-col items-center bg-background px-4 py-8 sm:justify-center">
+      <div className="w-full max-w-sm">
+        <Logo className="mb-8 justify-center" />
         <Outlet />
       </div>
     </div>
   );
+}
+
+// Wallet screens need a signed-in user; wait for the profile check before deciding
+function RequireAuth({ children }) {
+  const { isLoggedIn, profileLoaded } = useWalletStore();
+  if (!profileLoaded) return null;
+  return isLoggedIn ? children : <Navigate to="/" replace />;
+}
+
+// Full-screen layout (no sidebar) — camera/QR screens
+function FullScreenLayout() {
+  return <div className="min-h-svh bg-background"><Outlet /></div>;
 }
 
 const router = createHashRouter([
@@ -70,14 +69,14 @@ const router = createHashRouter([
     { path: '/recovery', element: <Recovery /> },
   ]},
   // Full-screen flows — camera, QR, payment confirmations
-  { element: <FullScreenLayout />, children: [
+  { element: <RequireAuth><FullScreenLayout /></RequireAuth>, children: [
     { path: '/receive', element: <Receive /> },
     { path: '/scan', element: <ScanQR /> },
     { path: '/qr', element: <QRScreen /> },
     { path: '/send/qr', element: <QRScreen /> },
   ]},
   // Dashboard — with sidebar
-  { element: <DashboardLayout />, children: [
+  { element: <RequireAuth><AppShell /></RequireAuth>, children: [
     { path: '/home', element: <Home /> },
     { path: '/send', element: <Send /> },
     { path: '/send/confirm', element: <SendConfirm /> },
@@ -94,10 +93,9 @@ const router = createHashRouter([
 ]);
 
 export default function App() {
-  const { theme, loadUserProfile, loadWalletState, setOnline, updateBalance } = useWalletStore();
+  const { loadUserProfile, loadWalletState, setOnline, updateBalance } = useWalletStore();
 
   useEffect(() => {
-    if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
     loadUserProfile();
     loadWalletState();
     const goOnline = () => setOnline(true);
@@ -120,7 +118,8 @@ export default function App() {
         await updateBalance({
           confirmed_bal: result.serverWallet.confirmed_bal,
           locked_bal: localLocked,
-          nonce: result.serverWallet.nonce_counter || 0,
+          // never move the local nonce backwards: unsynced txns may already use higher ones
+          nonce: Math.max(useWalletStore.getState().nonce, result.serverWallet.nonce_counter || 0),
           unconfirmed_received: localUnconfirmed,
         });
       }
@@ -135,9 +134,11 @@ export default function App() {
 
   return (
     <>
-      <SecureContextBanner />
-      <RouterProvider router={router} />
-      <ToastContainer />
+      <TooltipProvider>
+        <SecureContextBanner />
+        <RouterProvider router={router} />
+        <Toaster position="top-center" richColors />
+      </TooltipProvider>
     </>
   );
 }

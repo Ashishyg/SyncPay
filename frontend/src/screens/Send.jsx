@@ -2,6 +2,15 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWalletStore } from '../store/walletStore';
 import { getAllTxns } from '../services/storageService';
+import { Search, CheckCircle2, Users, AlertTriangle, WifiOff } from 'lucide-react';
+import PageHeader from '@/components/PageHeader';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 
 const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN');
 
@@ -44,117 +53,73 @@ export default function Send() {
     const amt = parseInt(amount) * 100;
     if (!amount || amt <= 0 || amt > spendable) return;
     if (!isOnline && amt > 50000) return;
-    navigate('/send/confirm', { state: { amount: amt, recipient: selected || { name: 'Wallet ID', id: 'unknown' } } });
+    navigate('/send/confirm', { state: { amount: amt, recipient: selected || { name: 'QR payment', id: 'unknown' } } });
   };
 
   return (
-    <main className="min-h-screen pb-20 w-full">
-      {/* Top Bar */}
-      <header className="fixed top-14 lg:top-0 right-0 lg:left-64 left-0 h-16 lg:h-20 bg-background/80 backdrop-blur-xl border-b border-outline-variant/15 px-4 lg:px-10 flex items-center justify-between z-30">
-        <div className="flex items-center gap-4">
-          <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/5">
-            <span className="material-symbols-outlined text-slate-400">arrow_back</span>
-          </button>
-          <h2 className="text-xl font-bold text-white tracking-tight">Send Money</h2>
-        </div>
-        {!isOnline && (
-          <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-tertiary/10 border border-tertiary/20">
-            <span className="w-2 h-2 bg-tertiary rounded-full"></span>
-            <span className="text-[10px] font-bold text-tertiary uppercase tracking-widest">Offline</span>
-          </div>
-        )}
-      </header>
+    <div className="mx-auto max-w-xl">
+      <PageHeader title="Send money" description="The receiver scans your QR — no internet needed on either phone." back>
+        {!isOnline && <Badge variant="outline" className="gap-1.5"><WifiOff className="size-3" />Offline</Badge>}
+      </PageHeader>
 
-      <div className="pt-36 lg:pt-28 px-4 lg:px-10 max-w-3xl mx-auto space-y-8">
-        {/* Amount Input */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-3xl border-t border-l border-outline-variant/15 p-8 flex flex-col items-center gap-4">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Amount to Send</p>
-          <div className="flex items-center gap-2">
-            <span className="text-3xl font-bold text-slate-600">₹</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              value={amount}
-              onChange={e => checkAmt(e.target.value)}
-              placeholder="0"
-              className="bg-transparent border-none outline-none text-6xl font-black text-white text-center w-56 placeholder-slate-800 tracking-tight"
-            />
-          </div>
-          <p className="text-xs text-slate-500">
-            Spendable: <span className="text-white font-bold">{fmt(spendable)}</span>
-          </p>
-
-          {/* Quick amounts */}
-          <div className="flex gap-2 flex-wrap justify-center">
-            {[50, 100, 200, 500].map(v => (
-              <button key={v} onClick={() => checkAmt(String(v))}
-                className="px-4 py-2 rounded-full bg-white/5 border border-white/10 text-sm font-bold text-slate-300 hover:bg-primary/10 hover:border-primary/20 hover:text-primary transition-all">
-                ₹{v}
-              </button>
-            ))}
-          </div>
-
-          {limitWarn && (
-            <div className="w-full bg-tertiary/10 border border-tertiary/20 rounded-xl px-4 py-3 flex items-center gap-3 text-sm text-tertiary font-medium">
-              <span className="material-symbols-outlined text-base flex-shrink-0">warning</span>
-              {limitWarn}
+      <div className="space-y-4">
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-4">
+            <p className="text-sm text-muted-foreground">Amount</p>
+            <div className="flex items-baseline justify-center gap-1">
+              <span className="text-3xl font-medium text-muted-foreground">₹</span>
+              <input
+                type="number" inputMode="numeric" autoFocus aria-label="Amount in rupees"
+                value={amount} onChange={e => checkAmt(e.target.value)} placeholder="0"
+                style={{ width: `${Math.max(String(amount).length, 1) + 0.25}ch` }}
+                className="max-w-full bg-transparent text-center text-5xl font-semibold tracking-tight tabular outline-none placeholder:text-muted-foreground/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+              />
             </div>
-          )}
-        </div>
-
-        {/* Recipient */}
-        <div className="space-y-4">
-          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Recipient</p>
-
-          {/* Search */}
-          <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-slate-600 text-xl">person_search</span>
-            <input
-              type="text"
-              placeholder="Search recent contacts..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full bg-[#0d0d15]/60 backdrop-blur-xl border border-outline-variant/20 rounded-2xl pl-11 pr-4 py-4 text-white placeholder-slate-700 focus:outline-none focus:border-primary/40 transition-colors"
-            />
-          </div>
-
-          {/* Recent contacts */}
-          {filtered.length > 0 ? (
-            <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 divide-y divide-outline-variant/10 overflow-hidden">
-              {filtered.map(c => (
-                <div key={c.id}
-                  onClick={() => setSelected(c)}
-                  className={`flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors ${selected?.id === c.id ? 'bg-primary/10' : 'hover:bg-white/3'}`}>
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-container to-primary flex items-center justify-center text-white font-black text-sm flex-shrink-0">
-                    {c.name[0].toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-white truncate">{c.name}</p>
-                    <p className="text-xs text-slate-500">{c.phone}</p>
-                  </div>
-                  {selected?.id === c.id && (
-                    <span className="material-symbols-outlined text-primary text-xl">check_circle</span>
-                  )}
-                </div>
+            <p className="text-sm text-muted-foreground">Available <span className="font-medium text-foreground tabular">{fmt(spendable)}</span></p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {[50, 100, 200, 500].map(v => (
+                <Button key={v} variant="outline" size="sm" className="rounded-full" onClick={() => checkAmt(String(v))}>₹{v}</Button>
               ))}
             </div>
-          ) : (
-            <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 p-8 text-center">
-              <span className="material-symbols-outlined text-4xl text-slate-700 block mb-2">group</span>
-              <p className="text-slate-500 text-sm">No recent contacts. The payment will go to your entered amount.</p>
-            </div>
-          )}
-        </div>
+            {limitWarn && <Alert variant="destructive"><AlertTriangle /><AlertDescription>{limitWarn}</AlertDescription></Alert>}
+          </CardContent>
+        </Card>
 
-        {/* CTA */}
-        <button
-          onClick={proceed}
-          disabled={!amount || !!limitWarn}
-          className="w-full py-5 rounded-2xl bg-gradient-to-r from-primary-container to-primary text-white font-black text-base tracking-wide shadow-lg shadow-primary/20 disabled:opacity-30 disabled:cursor-not-allowed active:scale-[0.98] transition-all"
-        >
-          Review Payment
-        </button>
+        <Card>
+          <CardHeader><CardTitle className="text-base">Recipient <span className="font-normal text-muted-foreground">(optional)</span></CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input placeholder="Search recent contacts" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            {filtered.length > 0 ? (
+              <div className="-mx-2 space-y-0.5">
+                {filtered.map(c => {
+                  const isSel = selected?.id === c.id;
+                  return (
+                    <button key={c.id} onClick={() => setSelected(isSel ? null : c)}
+                      className={cn('flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors', isSel ? 'bg-accent' : 'hover:bg-accent/60')}>
+                      <Avatar className="size-9"><AvatarFallback className="bg-primary/10 text-primary">{c.name[0].toUpperCase()}</AvatarFallback></Avatar>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{c.name}</p>
+                        <p className="text-xs text-muted-foreground">{c.phone}</p>
+                      </div>
+                      {isSel && <CheckCircle2 className="size-5 text-primary" />}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-6 text-center text-sm text-muted-foreground">
+                <Users className="size-6 opacity-50" />
+                No recent contacts. Anyone who scans your QR can receive it.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Button size="lg" className="w-full" onClick={proceed} disabled={!amount || !!limitWarn}>Review payment</Button>
       </div>
-    </main>
+    </div>
   );
 }

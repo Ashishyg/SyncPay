@@ -1,5 +1,5 @@
-import { getPendingTxns, getAllTxns, updateTxnStatus, getUserProfile } from './storageService';
-import { batchSync, hasToken } from './apiService';
+import { getAllTxns, updateTxnStatus, getUserProfile, savePendingTxn } from './storageService';
+import { batchSync, hasToken, getBalance, getTransactions } from './apiService';
 
 // Sync lock — prevents concurrent sync calls that cause double-debit
 let syncLock = false;
@@ -22,7 +22,9 @@ export async function runSync() {
       t.status === 'unconfirmed_received'
     );
 
-    if (pending.length === 0) return { confirmed: 0, failed: 0, results: [] };
+    // Nothing to upload, but still pull the balance: payments addressed to us may have
+    // been settled by the other phone's sync (e.g. a customer paying this merchant).
+    if (pending.length === 0) return { confirmed: 0, failed: 0, results: [], serverWallet: await getBalance() };
 
     // Get the current user's ID so we can fill in from_user_id for sent txns
     const profile = await getUserProfile();
@@ -79,6 +81,22 @@ export async function runSync() {
   } finally {
     syncLock = false;
   }
+}
+
+// Copy settled transactions this device doesn't know about (e.g. a payment to us that the
+// other phone synced) into local history, so History/Home show them — offline too.
+export async function pullServerHistory() {
+  if (!navigator.onLine || !hasToken()) return 0;
+  const [server, local] = await Promise.all([getTransactions(), getAllTxns()]);
+  const known = new Set(local.map(t => t.id));
+  const missing = server.filter(t => !known.has(t.id));
+  for (const t of missing) {
+    await savePendingTxn({
+      id: t.id, type: t.type, amount: t.amount, created_at: t.created_at,
+      status: 'confirmed', recipientName: t.counterparty, mode: 'offline_p2p', fromServer: true,
+    });
+  }
+  return missing.length;
 }
 
 // Auto-sync when online

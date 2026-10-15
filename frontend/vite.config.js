@@ -5,6 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 
 // mkcert-generated cert — trusted by Chrome & system store
 // Generated with: mkcert localhost 10.10.10.129 127.0.0.1
@@ -14,6 +15,7 @@ const httpsConfig = fs.existsSync(path.join(certDir, 'cert.pem'))
   : true; // Fallback to Vite self-signed if cert missing
 
 export default defineConfig({
+  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   plugins: [
     basicSsl(),
     tailwindcss(),

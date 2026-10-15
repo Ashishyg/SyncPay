@@ -1,73 +1,82 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
+import { ArrowDownLeft, ArrowUpRight, Copy, ShieldCheck } from 'lucide-react';
+import { toast } from 'sonner';
 import { getTxnById } from '../services/storageService';
+import PageHeader from '@/components/PageHeader';
+import { StatusBadge } from '@/components/TxnRow';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn, formatINR } from '@/lib/utils';
 
-const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN');
+const MODES = { offline_p2p: 'Offline QR', merchant_qr: 'Merchant QR', top_up: 'Top-up', withdrawal: 'Bank withdrawal' };
 
 export default function TxnDetail() {
-  const navigate = useNavigate();
   const { id } = useParams();
   const [txn, setTxn] = useState(null);
 
   useEffect(() => { if (id) getTxnById(id).then(setTxn); }, [id]);
 
   if (!txn) return (
-    <div className="scr" style={{ display: 'flex' }}>
-      <div className="tnav"><div className="bk" onClick={() => navigate(-1)}><svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg></div><div className="ntl">Transaction Detail</div></div>
-      <div className="sb" style={{ padding: 40, textAlign: 'center', color: 'var(--text3)' }}>Loading...</div>
+    <div className="mx-auto max-w-md">
+      <PageHeader title="Transaction" back />
+      <Skeleton className="h-80 w-full rounded-xl" />
     </div>
   );
 
   const isSent = txn.type === 'sent';
+  const rows = [
+    [isSent ? 'To' : 'From', txn.recipientName || txn.from_pub?.slice(0, 12) || '—'],
+    ['Method', MODES[txn.mode] || 'Offline QR'],
+    ['Date', new Date(txn.created_at * 1000).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })],
+    ...(txn.nonce != null ? [['Nonce', String(txn.nonce)]] : []),
+    ...(txn.fail_reason ? [['Failure reason', txn.fail_reason.replaceAll('_', ' ').toLowerCase()]] : []),
+  ];
 
   return (
-    <div className="scr" style={{ display: 'flex' }}>
-      <div className="tnav">
-        <div className="bk" onClick={() => navigate(-1)}><svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg></div>
-        <div className="ntl">Transaction Detail</div>
-        <div className="nact"><svg viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg></div>
-      </div>
-      <div className="sb" style={{ padding: 18 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px 0 24px' }}>
-          <div style={{ marginBottom: 14 }}>
-            {isSent ? (
-              <svg width="40" height="40" fill="none" stroke="var(--red)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>
-            ) : (
-              <svg width="40" height="40" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><line x1="17" y1="7" x2="7" y2="17"/><polyline points="17 17 7 17 7 7"/></svg>
+    <div className="mx-auto max-w-md">
+      <PageHeader title="Transaction" back />
+      <Card>
+        <CardContent className="space-y-5">
+          <div className="flex flex-col items-center gap-3 pt-2 text-center">
+            <div className={cn('flex size-12 items-center justify-center rounded-full', isSent ? 'bg-muted' : 'bg-success/15 text-success')}>
+              {isSent ? <ArrowUpRight className="size-6" /> : <ArrowDownLeft className="size-6" />}
+            </div>
+            <p className={cn('text-4xl font-semibold tracking-tight tabular', !isSent && 'text-success')}>
+              {isSent ? '−' : '+'}{formatINR(txn.amount)}
+            </p>
+            <StatusBadge status={txn.status} />
+          </div>
+          <Separator />
+          <dl className="space-y-3 text-sm">
+            {rows.map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-4">
+                <dt className="text-muted-foreground">{k}</dt>
+                <dd className="text-right font-medium">{v}</dd>
+              </div>
+            ))}
+            {txn.signature && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted-foreground">Signature</dt>
+                <dd className="flex items-center gap-1 font-medium text-success"><ShieldCheck className="size-4" />Ed25519 signed</dd>
+              </div>
             )}
+          </dl>
+          <Separator />
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground">Transaction ID</p>
+              <p className="truncate font-mono text-xs">{txn.id}</p>
+            </div>
+            <Button variant="outline" size="icon-sm" aria-label="Copy transaction ID"
+              onClick={() => { navigator.clipboard?.writeText(txn.id); toast.success('Transaction ID copied'); }}>
+              <Copy />
+            </Button>
           </div>
-          <div style={{ fontSize: 36, fontWeight: 300, letterSpacing: '-.02em', color: isSent ? 'var(--red)' : 'var(--green)' }}>{isSent ? '-' : '+'}{fmt(txn.amount)}</div>
-          <div style={{ marginTop: 8 }}>
-            <span className={`badge ${txn.status === 'confirmed' ? 'bg' : txn.status === 'failed' ? 'br' : 'ba'}`}>
-              {txn.status === 'confirmed' ? (
-                <><svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Confirmed</>
-              ) : txn.status === 'failed' ? (
-                <><svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Failed</>
-              ) : (
-                <><svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Pending</>
-              )}
-            </span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-          {[
-            ['Type', isSent ? 'Sent' : 'Received'],
-            ['To/From', txn.recipientName || txn.from_pub?.slice(0, 12) || '—'],
-            ['Transaction ID', txn.id?.slice(0, 16) + '...'],
-            ['Nonce', String(txn.nonce)],
-            ['Signature', txn.signature ? '✓ Ed25519 signed' : '—'],
-            ['Created', new Date(txn.created_at * 1000).toLocaleString()],
-            ['Status', txn.status],
-            ...(txn.fail_reason ? [['Fail reason', txn.fail_reason]] : []),
-          ].map(([k, v], i) => (
-            <div key={i} className="inf-r"><div className="inf-k">{k}</div><div className="inf-v" style={{ fontFamily: k === 'Signature' ? 'var(--f)' : 'var(--fm)', color: k === 'Signature' ? 'var(--green)' : undefined }}>{v}</div></div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 9, marginTop: 18 }}>
-          <button className="btn btn-s">Report</button>
-          <button className="btn btn-s">Share receipt</button>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

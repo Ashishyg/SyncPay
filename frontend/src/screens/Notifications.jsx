@@ -1,16 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useWalletStore } from '../store/walletStore';
-import { getNotifications, saveNotification } from '../services/storageService';
-
-const ICONS = {
-  payment_sent: { icon: 'arrow_upward', color: 'text-red-400 bg-red-500/10', border: 'border-red-500/10' },
-  payment_received: { icon: 'arrow_downward', color: 'text-emerald-400 bg-emerald-500/10', border: 'border-emerald-500/10' },
-  sync_complete: { icon: 'cloud_done', color: 'text-primary bg-primary/10', border: 'border-primary/10' },
-  balance_update: { icon: 'account_balance_wallet', color: 'text-emerald-400 bg-emerald-500/10', border: 'border-emerald-500/10' },
-  txn_failed: { icon: 'error', color: 'text-error bg-error/10', border: 'border-error/10' },
-  system: { icon: 'info', color: 'text-blue-400 bg-blue-500/10', border: 'border-blue-500/10' },
-};
+import { getNotifications } from '../services/storageService';
+import { ArrowUpRight, ArrowDownLeft, CloudCheck, Wallet, AlertCircle, Info, BellOff } from 'lucide-react';
+import PageHeader from '@/components/PageHeader';
+import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 
 function timeAgo(ts) {
   const diff = Date.now() - ts;
@@ -21,7 +15,6 @@ function timeAgo(ts) {
 }
 
 export default function Notifications() {
-  const navigate = useNavigate();
   const [notifs, setNotifs] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -44,57 +37,50 @@ export default function Notifications() {
     return () => { window.removeEventListener('pp-notification', handler); document.removeEventListener('visibilitychange', onVis); };
   }, [loadNotifs]);
 
-  return (
-    <main className="min-h-screen pb-24 w-full">
-      {/* Header */}
-      <header className="fixed top-14 lg:top-0 right-0 lg:left-64 left-0 h-16 lg:h-20 bg-background/80 backdrop-blur-xl border-b border-outline-variant/15 px-4 lg:px-10 flex items-center gap-4 z-30">
-        <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/5 transition-colors">
-          <span className="material-symbols-outlined text-slate-400">arrow_back</span>
-        </button>
-        <h2 className="text-xl font-bold text-white tracking-tight">Activity</h2>
-        {notifs.length > 0 && (
-          <span className="ml-auto text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-            {notifs.length} event{notifs.length !== 1 ? 's' : ''}
-          </span>
-        )}
-      </header>
+  const STYLE = {
+    payment_sent: { Icon: ArrowUpRight, className: 'bg-muted text-foreground' },
+    payment_received: { Icon: ArrowDownLeft, className: 'bg-success/15 text-success' },
+    sync_complete: { Icon: CloudCheck, className: 'bg-primary/10 text-primary' },
+    balance_update: { Icon: Wallet, className: 'bg-success/15 text-success' },
+    txn_failed: { Icon: AlertCircle, className: 'bg-destructive/15 text-destructive' },
+    system: { Icon: Info, className: 'bg-muted text-muted-foreground' },
+  };
 
-      <div className="pt-36 lg:pt-28 px-4 lg:px-10 max-w-2xl mx-auto space-y-3">
-        {loading ? (
-          <div className="flex flex-col items-center gap-3 py-20">
-            <span className="material-symbols-outlined text-primary text-3xl animate-spin">progress_activity</span>
-            <p className="text-sm text-slate-500">Loading activity...</p>
-          </div>
-        ) : notifs.length === 0 ? (
-          <div className="flex flex-col items-center gap-4 py-20 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center">
-              <span className="material-symbols-outlined text-slate-700 text-3xl">notifications_none</span>
-            </div>
-            <div>
-              <p className="text-sm font-bold text-white mb-1">No activity yet</p>
-              <p className="text-xs text-slate-500">Notifications will appear here when you send or receive payments, or when transactions sync.</p>
-            </div>
-          </div>
-        ) : (
-          notifs.map(n => {
-            const style = ICONS[n.type] || ICONS.system;
-            return (
-              <div key={n.id} className={`bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l ${style.border} border-outline-variant/15 p-4 flex items-start gap-4 ${!n.is_read ? 'ring-1 ring-primary/20' : ''}`}>
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${style.color}`}>
-                  <span className="material-symbols-outlined text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>{style.icon}</span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <p className="text-sm font-bold text-white truncate">{n.title}</p>
-                    <p className="text-[10px] text-slate-600 flex-shrink-0">{timeAgo(n.timestamp)}</p>
+  return (
+    <div className="mx-auto max-w-2xl">
+      <PageHeader title="Notifications" description={notifs.length ? `${notifs.length} event${notifs.length !== 1 ? 's' : ''}` : undefined} back />
+      {loading ? (
+        <div className="space-y-2">{[0, 1, 2].map(i => <Skeleton key={i} className="h-16 w-full rounded-xl" />)}</div>
+      ) : notifs.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-2 py-16 text-center">
+            <BellOff className="size-10 text-muted-foreground/50" />
+            <p className="font-medium">No notifications yet</p>
+            <p className="max-w-xs text-sm text-muted-foreground">Payments you send or receive, and sync results, will show up here.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="divide-y p-0">
+            {notifs.map(n => {
+              const { Icon, className } = STYLE[n.type] || STYLE.system;
+              return (
+                <div key={n.id} className="flex items-start gap-3 px-4 py-3">
+                  <div className={cn('flex size-9 shrink-0 items-center justify-center rounded-full', className)}><Icon className="size-4" /></div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="truncate text-sm font-medium">{n.title}</p>
+                      <p className="shrink-0 text-xs text-muted-foreground">{timeAgo(n.timestamp)}</p>
+                    </div>
+                    <p className="text-sm text-muted-foreground">{n.body}</p>
                   </div>
-                  <p className="text-xs text-slate-400 leading-relaxed">{n.body}</p>
+                  {!n.is_read && <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />}
                 </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </main>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }

@@ -35,4 +35,6 @@ backend/db/syncpay.db
 .claude
 .gemini
 context.md
-graphify-out/
+graphify-out/
+# WhatsApp (Baileys) session — contains the linked account's keys
+backend/wa_auth/

@@ -1,6 +1,6 @@
-import { signTransaction, verifySignature } from './cryptoService';
+import { signTransaction } from './cryptoService';
 import { lockFunds } from './walletService';
-import { markNonceUsed, isNonceUsed, savePendingTxn } from './storageService';
+import { markNonceUsed, savePendingTxn } from './storageService';
 
 const QR_TTL_SECONDS = 60;
 
@@ -60,52 +60,6 @@ export async function createSendTransaction({ amount, recipientId, recipientName
     qrData: btoa(JSON.stringify({ ...payload, sig: signature })),
     txnId,
     expiresAt: now + QR_TTL_SECONDS
-  };
-}
-
-export async function receiveTransaction(qrDataB64) {
-  const raw = JSON.parse(atob(qrDataB64));
-  const { sig, ...payload } = raw;
-
-  const now = Math.floor(Date.now() / 1000);
-
-  if (now > payload.expires) {
-    throw new Error('QR_EXPIRED');
-  }
-
-  if (payload.amount <= 0 || payload.amount > 50000) {
-    throw new Error('INVALID_AMOUNT');
-  }
-
-  // Verify signature
-  const valid = await verifySignature(payload, sig, payload.from);
-  if (!valid) throw new Error('INVALID_SIGNATURE');
-
-  // Check nonce not already used locally
-  const used = await isNonceUsed(payload.nonce);
-  if (used) throw new Error('NONCE_ALREADY_USED');
-
-  // Mark nonce used on receiver side too
-  await markNonceUsed(payload.nonce, payload.id);
-
-  // Save as pending incoming
-  await savePendingTxn({
-    id: payload.id,
-    type: 'received',
-    amount: payload.amount,
-    nonce: payload.nonce,
-    signature: sig,
-    payload,
-    from_pub: payload.from,
-    status: 'unconfirmed_received',
-    created_at: payload.ts
-  });
-
-  return {
-    txnId: payload.id,
-    amount: payload.amount,
-    fromPubKey: payload.from,
-    isValid: true
   };
 }
 

@@ -6,6 +6,13 @@ import { verifySignature } from '../services/cryptoService';
 import { savePendingTxn, isNonceUsed, markNonceUsed } from '../services/storageService';
 import { notifyPaymentReceived } from '../services/notificationService';
 import jsQR from 'jsqr';
+import { ArrowLeft, CheckCircle2, XCircle, Loader2, CameraOff, ShieldCheck, Clock } from 'lucide-react';
+import Viewfinder from '@/components/Viewfinder';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { cn } from '@/lib/utils';
 
 export default function Receive() {
   const navigate = useNavigate();
@@ -125,6 +132,15 @@ export default function Receive() {
         return;
       }
 
+      // A payment signed for a specific account (e.g. a merchant) can only be claimed by that account
+      const me = useWalletStore.getState().user?.userId;
+      if (txn.to && txn.to !== 'unknown' && txn.to !== me) {
+        setVerifyResult({ valid: false, reason: 'This payment is addressed to a different account' });
+        setShowModal(true);
+        setVerifying(false);
+        return;
+      }
+
       // Check expiry
       const now = Math.floor(Date.now() / 1000);
       if (txn.expires_at && now > txn.expires_at) {
@@ -135,7 +151,7 @@ export default function Receive() {
       }
 
       // Check nonce replay
-      const used = await isNonceUsed(txn.nonce);
+      const used = await isNonceUsed(`${txn.from_pub}:${txn.nonce}`);
       if (used) {
         setVerifyResult({ valid: false, reason: 'Nonce already used -- possible double spend' });
         setShowModal(true);
@@ -167,7 +183,7 @@ export default function Receive() {
     if (!scannedTxn || !verifyResult?.valid) return;
 
     // Mark nonce as used
-    await markNonceUsed(scannedTxn.nonce, scannedTxn.id);
+    await markNonceUsed(`${scannedTxn.from_pub}:${scannedTxn.nonce}`, scannedTxn.id);
 
     // Save as unconfirmed received (include payloadString for backend sync)
     await savePendingTxn({
@@ -203,81 +219,74 @@ export default function Receive() {
   const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN');
 
   return (
-    <div className="scr" style={{ display: 'flex' }}>
-      <div className="tnav" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: 'rgba(0,0,0,.5)', borderBottom: 'none' }}>
-        <div className="bk" style={{ background: 'rgba(0,0,0,.4)', border: 'none' }} onClick={() => navigate(-1)}><svg viewBox="0 0 24 24" style={{ stroke: '#fff' }}><polyline points="15 18 9 12 15 6"/></svg></div>
-        <div className="ntl" style={{ color: '#fff' }}>Scan QR to Receive</div>
-      </div>
-
-      {/* Camera view */}
-      <div style={{ flex: 1, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}>
-        <video ref={videoRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} playsInline muted autoPlay />
-        <canvas ref={canvasRef} style={{ display: 'none' }} />
-        <div className="sfr"><div className="sc tl"/><div className="sc tr"/><div className="sc bl"/><div className="sc br"/>{scanning && <div className="sline"/>}</div>
-        {cameraError && <div style={{ position: 'absolute', bottom: 60, left: 20, right: 20, background: 'rgba(255,0,0,.15)', border: '1px solid rgba(255,0,0,.3)', borderRadius: 'var(--r2)', padding: 12, fontSize: 12, color: '#ff7675', fontWeight: 600, textAlign: 'center' }}>{cameraError}</div>}
-        {verifying && <div style={{ position: 'absolute', bottom: 60, left: '50%', transform: 'translateX(-50%)', fontSize: 13, color: '#fff', fontWeight: 700, background: 'rgba(0,0,0,.6)', padding: '8px 18px', borderRadius: 20 }}>Verifying signature...</div>}
-        <div style={{ position: 'absolute', bottom: 18, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap', fontSize: 12, color: 'rgba(255,255,255,.7)', fontWeight: 600 }}>
-          {scanning ? 'Point camera at sender\'s QR code' : 'QR detected'}
+    <div className="flex h-svh flex-col bg-black">
+      <header className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-gradient-to-b from-black/70 to-transparent p-4 text-white">
+        <Button variant="ghost" size="icon" className="text-white hover:bg-white/10 hover:text-white" onClick={() => navigate(-1)} aria-label="Back"><ArrowLeft /></Button>
+        <div>
+          <p className="font-medium">Receive payment</p>
+          <p className="text-sm text-white/70">Scan the sender’s payment QR</p>
         </div>
-      </div>
+      </header>
 
-      {/* Bottom info */}
-      <div style={{ background: 'var(--bg2)', padding: 18, display: 'flex', flexDirection: 'column', gap: 11 }}>
-        <div className="sl" style={{ marginBottom: 0 }}>Your Wallet ID</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 11, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r2)', padding: '11px 14px' }}>
-          <div style={{ width: 46, height: 46, background: '#6c5ce7', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800, color: '#fff' }}>QR</div>
-          <div style={{ flex: 1 }}><div style={{ fontSize: 13, fontWeight: 700 }}>{user?.name || 'User'}</div><div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--fm)' }}>{user?.walletId || 'PP·user·xxxx'}</div></div>
-        </div>
-      </div>
-
-      {/* Payment Received Modal */}
-      <div className={`mover ${showModal ? 'show' : ''}`}>
-        <div className="msheet">
-          <div className="mhandle" />
-          <div style={{ textAlign: 'center', marginBottom: 18 }}>
-            <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center' }}>
-              {verifyResult?.valid ? (
-                <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'var(--gbg)', color: 'var(--green)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <svg width="32" height="32" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                </div>
-              ) : (
-                <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'var(--rbg)', color: 'var(--red)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <svg width="32" height="32" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                </div>
-              )}
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>
-              {verifyResult?.valid ? `${fmt(scannedTxn?.amount || 0)} incoming` : 'Verification Failed'}
-            </div>
-            {scannedTxn?.from_name && <div style={{ fontSize: 13, color: 'var(--text2)' }}>From <span style={{ fontWeight: 700, color: 'var(--text)' }}>{scannedTxn.from_name}</span></div>}
-            <div style={{ marginTop: 10 }}>
-              <span className={`badge ${verifyResult?.valid ? 'ba' : 'br'}`}>
-                {verifyResult?.valid ? (
-                  <><svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> Unconfirmed — offline</>
-                ) : (
-                  <><svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> {verifyResult?.reason || 'Invalid'}</>
-                )}
-              </span>
-            </div>
-          </div>
-          {verifyResult?.valid && (
-            <>
-              <div style={{ background: 'var(--abg)', border: '1px solid rgba(253,203,110,.2)', borderRadius: 'var(--r2)', padding: 11, marginBottom: 16, fontSize: 12, color: 'var(--amber)', fontWeight: 600, lineHeight: 1.7 }}>
-                Payment is signed but unconfirmed until both devices sync. For amounts above ₹100, wait for sync before handing over goods.
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 16 }}>
-                <div className="inf-r"><div className="inf-k">Signature</div><div className="inf-v" style={{ color: 'var(--green)', fontFamily: 'var(--f)', fontWeight: 700 }}>✓ Valid Ed25519</div></div>
-                <div className="inf-r"><div className="inf-k">Nonce</div><div className="inf-v" style={{ color: 'var(--green)', fontFamily: 'var(--f)', fontWeight: 700 }}>First use ✓</div></div>
-                <div className="inf-r"><div className="inf-k">Amount</div><div className="inf-v">{fmt(scannedTxn?.amount || 0)}</div></div>
-              </div>
-            </>
+      <Viewfinder videoRef={videoRef} canvasRef={canvasRef} scanning={scanning}>
+        <div className="absolute inset-x-4 bottom-6 flex justify-center">
+          {cameraError ? (
+            <Alert variant="destructive" className="max-w-sm"><CameraOff /><AlertDescription>{cameraError}</AlertDescription></Alert>
+          ) : verifying ? (
+            <Badge className="gap-2 bg-black/70 px-3 py-1.5 text-white"><Loader2 className="size-3.5 animate-spin" />Verifying signature…</Badge>
+          ) : (
+            <Badge className="bg-black/60 px-3 py-1.5 text-white/90">{scanning ? 'Looking for a SyncPay QR…' : 'QR detected'}</Badge>
           )}
-          <div style={{ display: 'flex', gap: 9 }}>
-            <button className="btn btn-s" style={{ flex: 1 }} onClick={rejectAndRescan}>{verifyResult?.valid ? 'Reject' : 'Scan Again'}</button>
-            {verifyResult?.valid && <button className="btn btn-p" style={{ flex: 1 }} onClick={acceptPayment}>Accept {fmt(scannedTxn?.amount || 0)}</button>}
+        </div>
+      </Viewfinder>
+
+      <div className="border-t bg-background p-4">
+        <p className="mb-2 text-xs text-muted-foreground">Receiving into</p>
+        <div className="flex items-center gap-3">
+          <div className="flex size-10 items-center justify-center rounded-full bg-primary/10 font-semibold text-primary">{(user?.name || 'U')[0].toUpperCase()}</div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{user?.name || 'User'}</p>
+            <p className="truncate font-mono text-xs text-muted-foreground">{user?.walletId || '—'}</p>
           </div>
         </div>
       </div>
+
+      <Dialog open={showModal} onOpenChange={open => { if (!open) rejectAndRescan(); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader className="items-center text-center">
+            <div className={cn('mb-2 flex size-14 items-center justify-center rounded-full',
+              verifyResult?.valid ? 'bg-success/15 text-success' : 'bg-destructive/15 text-destructive')}>
+              {verifyResult?.valid ? <CheckCircle2 className="size-7" /> : <XCircle className="size-7" />}
+            </div>
+            <DialogTitle className="text-2xl tabular">
+              {verifyResult?.valid ? `${fmt(scannedTxn?.amount || 0)} incoming` : 'Can’t accept this QR'}
+            </DialogTitle>
+            <DialogDescription>
+              {verifyResult?.valid
+                ? (scannedTxn?.from_name ? `From ${scannedTxn.from_name}` : 'Signature checked on this device')
+                : verifyResult?.reason || 'Invalid QR'}
+            </DialogDescription>
+          </DialogHeader>
+          {verifyResult?.valid && (
+            <div className="space-y-3">
+              <dl className="space-y-2 rounded-lg border p-3 text-sm">
+                <div className="flex justify-between"><dt className="text-muted-foreground">Signature</dt><dd className="flex items-center gap-1 font-medium text-success"><ShieldCheck className="size-4" />Valid Ed25519</dd></div>
+                <div className="flex justify-between"><dt className="text-muted-foreground">Replay check</dt><dd className="font-medium text-success">First use</dd></div>
+                <div className="flex justify-between"><dt className="text-muted-foreground">Status</dt><dd className="flex items-center gap-1 font-medium text-warning"><Clock className="size-4" />Unconfirmed</dd></div>
+              </dl>
+              <p className="text-xs text-muted-foreground">
+                The payment is signed but settles only after a sync. For larger amounts, wait for confirmation before handing over goods.
+              </p>
+            </div>
+          )}
+          <DialogFooter className="grid grid-cols-2 gap-2 sm:flex">
+            <Button variant="outline" className={cn(!verifyResult?.valid && 'col-span-2')} onClick={rejectAndRescan}>
+              {verifyResult?.valid ? 'Reject' : 'Scan again'}
+            </Button>
+            {verifyResult?.valid && <Button onClick={acceptPayment}>Accept</Button>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

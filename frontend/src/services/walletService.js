@@ -75,12 +75,6 @@ export async function deductWithdrawal(amount) {
   await saveWalletState(state);
 }
 
-export async function addTopUp(amount) {
-  const state = await getWalletState();
-  state.confirmed_bal += amount;
-  await saveWalletState(state);
-}
-
 export async function getSpendable() {
   const state = await getWalletState();
   return state.confirmed_bal - state.locked_bal;

@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Search, ReceiptText } from 'lucide-react';
 import { getAllTxns } from '../services/storageService';
-
-const fmt = (p) => '₹' + (p / 100).toLocaleString('en-IN');
+import { pullServerHistory } from '../services/syncService';
+import PageHeader from '@/components/PageHeader';
+import TxnRow from '@/components/TxnRow';
+import { Input } from '@/components/ui/input';
+import { Card, CardContent } from '@/components/ui/card';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const FILTERS = [
   { id: 'all', label: 'All' },
@@ -12,8 +16,17 @@ const FILTERS = [
   { id: 'failed', label: 'Failed' },
 ];
 
+// Group label for a unix-seconds timestamp: Today / Yesterday / 12 Oct 2026
+function dayLabel(ts) {
+  const d = new Date(ts * 1000);
+  const today = new Date();
+  const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 export default function History() {
-  const navigate = useNavigate();
   const [txns, setTxns] = useState([]);
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -28,8 +41,9 @@ export default function History() {
   }, []);
 
   const loadTxns = async () => {
-    const all = await getAllTxns();
-    setTxns(all.sort((a, b) => b.created_at - a.created_at));
+    const show = async () => setTxns((await getAllTxns()).sort((a, b) => b.created_at - a.created_at));
+    await show(); // local first (works offline)
+    try { if (await pullServerHistory()) await show(); } catch { /* offline or not signed in */ }
   };
 
   const filtered = txns.filter(t => {
@@ -42,100 +56,47 @@ export default function History() {
     !search || (t.recipientName || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const statusColor = (status) => {
-    if (status === 'confirmed') return 'text-emerald-400';
-    if (status === 'failed')    return 'text-error';
-    return 'text-tertiary';
-  };
+  const groups = [];
+  for (const tx of filtered) {
+    const label = dayLabel(tx.created_at);
+    if (groups.at(-1)?.label !== label) groups.push({ label, items: [] });
+    groups.at(-1).items.push(tx);
+  }
 
   return (
-    <main className="min-h-screen pb-20 w-full">
-      {/* Top Bar */}
-      <header className="fixed top-14 lg:top-0 right-0 lg:left-64 left-0 h-16 lg:h-20 bg-background/80 backdrop-blur-xl border-b border-outline-variant/15 px-4 lg:px-10 flex items-center justify-between z-30">
-        <h2 className="text-xl font-bold text-white tracking-tight">Transaction History</h2>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-500">{filtered.length} records</span>
-        </div>
-      </header>
-
-      <div className="pt-36 lg:pt-28 px-4 lg:px-10 max-w-5xl mx-auto space-y-6">
-        {/* Search */}
-        <div className="relative">
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-slate-600 text-xl">search</span>
-          <input
-            type="text"
-            placeholder="Search by name..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full bg-[#0d0d15]/60 backdrop-blur-xl border border-outline-variant/20 rounded-2xl pl-11 pr-4 py-4 text-white placeholder-slate-700 focus:outline-none focus:border-primary/40 focus:bg-[#0d0d15] transition-colors"
-          />
+    <div>
+      <PageHeader title="History" description={`${filtered.length} transaction${filtered.length === 1 ? '' : 's'}`} />
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Tabs value={filter} onValueChange={setFilter}>
+            <TabsList className="w-full sm:w-auto">
+              {FILTERS.map(f => <TabsTrigger key={f.id} value={f.id}>{f.label}</TabsTrigger>)}
+            </TabsList>
+          </Tabs>
+          <div className="relative sm:w-64">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input placeholder="Search by name" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
         </div>
 
-        {/* Filter Pills */}
-        <div className="flex gap-2 flex-wrap">
-          {FILTERS.map(f => (
-            <button
-              key={f.id}
-              onClick={() => setFilter(f.id)}
-              className={`px-4 py-2 rounded-full text-[11px] font-bold uppercase tracking-widest transition-all ${
-                filter === f.id
-                  ? 'bg-primary/20 text-primary border border-primary/30'
-                  : 'bg-white/5 text-slate-500 border border-white/5 hover:bg-white/10 hover:text-slate-300'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Transaction List */}
-        <div className="bg-[#0d0d15]/60 backdrop-blur-xl rounded-2xl border-t border-l border-outline-variant/15 overflow-hidden">
-          {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 gap-4">
-              <span className="material-symbols-outlined text-5xl text-slate-700">receipt_long</span>
-              <p className="text-slate-500 text-sm">No transactions found</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-outline-variant/10">
-              {filtered.map(tx => (
-                <div
-                  key={tx.id}
-                  onClick={() => navigate(`/history/${tx.id}`)}
-                  className="flex items-center gap-4 px-6 py-4 hover:bg-white/3 cursor-pointer transition-colors group"
-                >
-                  <div className={`w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    tx.type === 'sent' ? 'bg-error/10' : 'bg-emerald-500/10'
-                  }`}>
-                    <span className={`material-symbols-outlined text-xl ${tx.type === 'sent' ? 'text-error' : 'text-emerald-400'}`}>
-                      {tx.type === 'sent' ? 'call_made' : 'call_received'}
-                    </span>
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-white truncate group-hover:text-primary-fixed-dim transition-colors">
-                      {tx.recipientName || (tx.type === 'received' ? 'Received' : 'Sent')}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {new Date(tx.created_at * 1000).toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' })}
-                      {' · '}
-                      <span className={`font-bold ${statusColor(tx.status)}`}>{tx.status}</span>
-                    </p>
-                  </div>
-
-                  <div className="text-right flex-shrink-0">
-                    <p className={`text-sm font-black ${tx.type === 'sent' ? 'text-white' : 'text-emerald-400'}`}>
-                      {tx.type === 'sent' ? '−' : '+'}{fmt(tx.amount)}
-                    </p>
-                    <p className="text-[10px] text-slate-600 font-mono uppercase mt-0.5">{tx.mode || 'offline'}</p>
-                  </div>
-
-                  <span className="material-symbols-outlined text-slate-700 group-hover:text-slate-500 text-base flex-shrink-0 transition-colors">chevron_right</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {groups.length === 0 ? (
+          <Card>
+            <CardContent className="flex flex-col items-center gap-2 py-16 text-center text-sm text-muted-foreground">
+              <ReceiptText className="size-10 opacity-40" />
+              No transactions found
+            </CardContent>
+          </Card>
+        ) : groups.map(g => (
+          <div key={g.label}>
+            <p className="mb-2 px-1 text-xs font-medium text-muted-foreground">{g.label}</p>
+            <Card>
+              <CardContent className="px-2">
+                {g.items.map(tx => <TxnRow key={tx.id} tx={tx} />)}
+              </CardContent>
+            </Card>
+          </div>
+        ))}
       </div>
-    </main>
+    </div>
   );
 }

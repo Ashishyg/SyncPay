@@ -13,6 +13,7 @@ export const useWalletStore = create((set, get) => ({
   // User state
   user: null,
   isLoggedIn: false,
+  profileLoaded: false, // true once IndexedDB has been checked (route guard waits for it)
   pinAttempts: 0,
   isLocked: false,
 
@@ -21,7 +22,7 @@ export const useWalletStore = create((set, get) => ({
   isSyncing: false,
 
   // Theme
-  theme: localStorage.getItem('sp_theme') || 'dark',
+  theme: localStorage.getItem('sp_theme') || 'light',
 
   // Actions
   loadWalletState: async () => {
@@ -31,17 +32,19 @@ export const useWalletStore = create((set, get) => ({
 
   loadUserProfile: async () => {
     const profile = await getUserProfile();
-    if (profile) {
-      set({ user: profile, isLoggedIn: true });
-    }
+    // A signed-out user keeps their keys on the device but must unlock with PIN again
+    const signedOut = localStorage.getItem('sp_signed_out') === '1';
+    set({ user: profile || null, isLoggedIn: !!profile && !signedOut, profileLoaded: true });
   },
 
   setUser: async (profile) => {
     await saveUserProfile(profile);
+    localStorage.removeItem('sp_signed_out');
     set({ user: profile, isLoggedIn: true, pinAttempts: 0, isLocked: false });
   },
 
   logout: () => {
+    localStorage.setItem('sp_signed_out', '1');
     set({ user: null, isLoggedIn: false });
   },
 
@@ -67,7 +70,7 @@ export const useWalletStore = create((set, get) => ({
   toggleTheme: () => {
     const newTheme = get().theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('sp_theme', newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme === 'light' ? 'light' : '');
+    document.documentElement.classList.toggle('dark', newTheme === 'dark');
     set({ theme: newTheme });
   },
 

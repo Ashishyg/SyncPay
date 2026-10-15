@@ -4,6 +4,7 @@
 import crypto from 'crypto';
 import { getDB } from '../db.js';
 import { isWhatsAppReady, sendWhatsApp } from './whatsapp.js';
+import { otpMessage } from './messages.js';
 
 export const MOCK_OTP = '123456';
 const OTP_TTL = 300;      // 5 minutes
@@ -28,7 +29,7 @@ export async function sendOtp(phone) {
   getDB().prepare(`INSERT INTO otp_sessions (phone, otp_hash, expires_at, attempts) VALUES (?,?,?,0)
                    ON CONFLICT(phone) DO UPDATE SET otp_hash = excluded.otp_hash, expires_at = excluded.expires_at, attempts = 0`)
     .run(phone, hashCode(phone, code), Math.floor(Date.now() / 1000) + OTP_TTL);
-  const sent = await sendWhatsApp(phone, `${code} is your SyncPay verification code. It expires in 5 minutes. Don't share it with anyone.`);
+  const sent = await sendWhatsApp(phone, otpMessage(code));
   if (!sent) throw new OtpError(502, 'Could not send the code on WhatsApp. Is this number on WhatsApp?');
 }
 

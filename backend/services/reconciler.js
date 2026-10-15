@@ -57,7 +57,7 @@ function reconcileOne(db, userId, txn) {
       const claimed = db.prepare('UPDATE transactions SET to_user_id = ? WHERE id = ? AND to_user_id IS NULL').run(recipient, p.id);
       if (!claimed.changes) return { id: p.id, status: existing.status };
       db.prepare('UPDATE wallets SET confirmed_bal = confirmed_bal + ? WHERE user_id = ?').run(existing.amount, recipient);
-      return { id: p.id, status: existing.status, settled: { from: sender.id, to: recipient, amount: existing.amount, claimOnly: true } };
+      return { id: p.id, status: existing.status, settled: { id: p.id, ts: p.ts, from: sender.id, to: recipient, amount: existing.amount, claimOnly: true } };
     }
     if (isSender || existing.to_user_id === userId) return { id: p.id, status: existing.status };
     return fail(p.id, 'ALREADY_CLAIMED');
@@ -89,7 +89,7 @@ function reconcileOne(db, userId, txn) {
   db.prepare(`INSERT INTO transactions (id, from_user_id, to_user_id, amount, nonce, signature, mode, status, created_at, synced_at, expires_at)
               VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .run(p.id, sender.id, recipient, p.amount, p.nonce, txn.signature, 'offline_p2p', 'confirmed', p.ts, now, Number.isSafeInteger(p.expires) ? p.expires : p.ts + 60);
-  return { id: p.id, status: 'confirmed', settled: { from: sender.id, to: recipient, amount: p.amount } };
+  return { id: p.id, status: 'confirmed', settled: { id: p.id, ts: p.ts, from: sender.id, to: recipient, amount: p.amount } };
 }
 
 export function reconcileTransactions(userId, transactions) {

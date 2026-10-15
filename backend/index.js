@@ -9,6 +9,7 @@ import { reconcileTransactions } from './services/reconciler.js';
 import { getOrIssueAllowance, walletView, SERVER_PUB } from './services/allowance.js';
 import { OTP_CHANNEL, sendOtp, checkOtp, OtpError } from './services/otp.js';
 import { startWhatsApp, sendWhatsApp, getWhatsAppStatus } from './services/whatsapp.js';
+import { receivedMessage, settledMessage } from './services/messages.js';
 import { authMiddleware, signSession, signOtpToken, isValidOtpToken } from './middleware/auth.js';
 
 const app = express();
@@ -184,13 +185,12 @@ function syncFor(userId, transactions, via) {
 }
 
 // WhatsApp payment alerts (best effort; no-op if WhatsApp isn't connected)
-const rupees = (p) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 });
 function notifySettled(settled) {
   const user = getDB().prepare('SELECT u.name, u.phone, w.confirmed_bal + w.locked_bal AS confirmed_bal FROM users u JOIN wallets w ON w.user_id = u.id WHERE u.id = ?');
   for (const s of settled) {
     const from = user.get(s.from), to = s.to && user.get(s.to);
-    if (to) sendWhatsApp(to.phone, `💰 SyncPay: ${rupees(s.amount)} received from ${from.name}. Balance: ${rupees(to.confirmed_bal)}`);
-    if (!s.claimOnly) sendWhatsApp(from.phone, `✅ SyncPay: your payment of ${rupees(s.amount)}${to ? ` to ${to.name}` : ''} has settled. Balance: ${rupees(from.confirmed_bal)}`);
+    if (to) sendWhatsApp(to.phone, receivedMessage({ amount: s.amount, fromName: from.name, id: s.id, ts: s.ts, balance: to.confirmed_bal }));
+    if (!s.claimOnly) sendWhatsApp(from.phone, settledMessage({ amount: s.amount, toName: to?.name, id: s.id, ts: s.ts, balance: from.confirmed_bal }));
   }
 }
 
